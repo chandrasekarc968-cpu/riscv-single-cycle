@@ -39,10 +39,17 @@ module controller (
         .alu_control(alu_control)
     );
 
-    // PC Logic: Branch if it's a branch instruction AND the ALU output is zero (BEQ)
-    // Or, unconditionally branch if it is a Jump (JAL) instruction.
-    assign pc_src = (branch & zero) | jump;
+    // Old PC Logic:
+    // assign pc_src = (branch & zero) | jump;
 
+    // New PC Logic (Outputs 2 bits):
+    // 00 = PC+4
+    // 01 = PC+Imm (JAL or successful branch)
+    // 10 = ALU Result (JALR)
+    
+    assign pc_src = jalr ? 2'b10 : 
+                    ((branch & zero) | jump) ? 2'b01 : 
+                    2'b00;
 endmodule
 
 // 2. Main Decoder
@@ -87,7 +94,28 @@ module maindec (
             7'b1101111: begin // Jump (jal)
                 reg_write = 1; imm_src = 3'b011; jump = 1; 
                 result_src = 2'b10; 
+                // Add this case to the maindec case(op) block:
+    7'b0110111: begin // LUI
+        reg_write  = 1; 
+        imm_src    = 3'b100; // U-type immediate
+        result_src = 2'b11;  // Route imm_ext directly to Register File
+        
+        // Don't cares (set to 0 for safety)
+        alu_src = 0; mem_write = 0; branch = 0; alu_op = 2'b00; jump = 0;
+                  end
             end
+            // Add this case to the maindec case(op) block:
+    7'b1100111: begin // JALR
+        reg_write  = 1; 
+        imm_src    = 3'b000; // I-type immediate
+        alu_src    = 1;      // Feed immediate to ALU
+        alu_op     = 2'b00;  // Force ALU to ADD (rs1 + imm)
+        result_src = 2'b10;  // Save PC+4 to Register File
+        jalr       = 1;      // New signal!
+        
+        // Others
+        branch = 0; jump = 0; mem_write = 0;
+                end
         endcase
     end
 endmodule

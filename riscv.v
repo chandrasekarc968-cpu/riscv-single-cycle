@@ -10,7 +10,7 @@ module riscv (
 );
 
     // Internal wires for Datapath and Control
-    wire       pc_src, alu_src, reg_write, zero;
+    wire       [1;0]pc_src, alu_src, reg_write, zero;
     wire [1:0] result_src;
     wire [2:0] imm_src;
     wire [3:0] alu_control;
@@ -45,6 +45,9 @@ module riscv (
     assign pc_plus_4 = pc + 32'd4;
     assign pc_target = pc + imm_ext;
     assign pc_next   = pc_src ? pc_target : pc_plus_4;
+    assign pc_next = (pc_src == 2'b00) ? pc_plus_4 :
+                     (pc_src == 2'b01) ? pc_target :   // Branch or JAL
+                                         alu_result;   // JALR
 
     pc pcreg (
         .clk(clk),
@@ -83,9 +86,12 @@ module riscv (
         .zero(zero)
     );
 
-    // Writeback Logic (Multiplexer sending data back to RegFile)
-    assign result = (result_src == 2'b00) ? alu_result :
-                    (result_src == 2'b01) ? read_data :
-                                            pc_plus_4;
+   // Old Writeback Logic
+    // assign result = (result_src == 2'b00) ? alu_result :
+    //                 (result_src == 2'b01) ? read_data : pc_plus_4;
 
+    // New Writeback Logic (Adding 2'b11 for LUI)
+    assign result = (result_src == 2'b00) ? alu_result :
+                    (result_src == 2'b01) ? read_data : 
+                    (result_src == 2'b10) ? pc_plus_4 : imm_ext;
 endmodule
