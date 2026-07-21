@@ -1,63 +1,89 @@
 // ---------------------------------------------------------
-// DRAGON SLAYER RPG
+// ASYNCHRONOUS DRAGON SLAYER RPG (DUAL CORE)
 // ---------------------------------------------------------
 .text
-
 main:
     li s10, 0x80000000  // UART TX
     li s11, 0x80000004  // UART RX
     li s9,  0x8000000C  // Cycle counter (for PRNG)
+    li s8,  0x80000014  // Hardware Mutex
+    li s6,  0x2000      // Shared: Player HP Address
+    li s5,  0x2004      // Shared: Dragon HP Address
+    li s7,  0x2008      // Shared: Game Status Address
     
-    // Player HP (s0) = 100
-    li s0, 100
-    // Dragon HP (s1) = 100
-    li s1, 100
+    // Read mhartid
+    csrr a0, 0xF14
+    li t0, 1
+    beq a0, t0, core1_main
 
-    // Print welcome
+// =========================================================
+// CORE 0: PLAYER LOOP
+// =========================================================
+core0_main:
+    // Initialize Shared State
+    li t0, 100
+    sw t0, 0(s6)
+    sw t0, 0(s5)
+    sw zero, 0(s7)
+
+    // Acquire Mutex & Print Welcome
+    call lock_mutex
     la a0, msg_welcome
     call print_str
-    
-battle_loop:
-    // Check win/loss
-    blez s0, lose
-    blez s1, win
+    call unlock_mutex
 
-    // Print Player HP
+core0_loop:
+    // Check game over
+    lw t0, 0(s7)
+    bnez t0, end_game
+
+    // Check win/loss
+    lw t1, 0(s6)
+    blez t1, do_lose
+    lw t2, 0(s5)
+    blez t2, do_win
+
+    // Print Stats & Menu
+    call lock_mutex
     la a0, msg_stats_p
     call print_str
-    mv a0, s0
+    lw a0, 0(s6)
     call print_num
-    
-    // Print Dragon HP
     la a0, msg_stats_d
     call print_str
-    mv a0, s1
+    lw a0, 0(s5)
     call print_num
-    
-    // Print menu
     la a0, msg_menu
     call print_str
+    call unlock_mutex
 
-wait_input:
+core0_wait_input:
+    // Check if game ended while waiting
+    lw t0, 0(s7)
+    bnez t0, end_game
+
     lw t0, 0(s11)       // read RX (blocking)
-    
     li t1, 49           // '1'
-    beq t0, t1, do_attack
+    beq t0, t1, core0_attack
     li t2, 50           // '2'
-    beq t0, t2, do_heal
-    j wait_input
+    beq t0, t2, core0_heal
+    j core0_wait_input
 
-do_attack:
+core0_attack:
+    call lock_mutex
     la a0, msg_newline
     call print_str
     la a0, msg_attack
     call print_str
     
-    // Random damage 10-25
-    lw t0, 0(s9)        // read cycle counter
-    andi t0, t0, 15     // 0 to 15
-    addi t0, t0, 10     // 10 to 25
-    sub s1, s1, t0      // Dragon HP -= dmg
+    // Damage Dragon
+    lw t0, 0(s9)
+    andi t0, t0, 15
+    addi t0, t0, 10
+    
+    lw t1, 0(s5)
+    sub t1, t1, t0
+    sw t1, 0(s5)
     
     // Print damage amount
     la a0, msg_dmg
@@ -69,27 +95,29 @@ do_attack:
     la a0, msg_newline
     call print_str
     
-    j dragon_turn
+    call unlock_mutex
+    j core0_loop
 
-do_heal:
+core0_heal:
+    call lock_mutex
     la a0, msg_newline
     call print_str
     la a0, msg_heal
     call print_str
     
-    // Random heal 20-35
+    // Heal Player
     lw t0, 0(s9)
     andi t0, t0, 15
     addi t0, t0, 20
-    add s0, s0, t0
     
-    // Max HP = 100
-    li t1, 100
-    bge t1, s0, print_heal_amt
-    mv s0, t1
-
-print_heal_amt:
-    // Print heal amount
+    lw t1, 0(s6)
+    add t1, t1, t0
+    li t2, 100
+    bge t2, t1, c0_write_hp
+    mv t1, t2 // cap at 100
+c0_write_hp:
+    sw t1, 0(s6)
+    
     la a0, msg_heal_amt
     call print_str
     mv a0, t0
@@ -99,27 +127,76 @@ print_heal_amt:
     la a0, msg_newline
     call print_str
     
-    j dragon_turn
+    call unlock_mutex
+    j core0_loop
 
-dragon_turn:
-    // Check if dragon died before attacking
-    blez s1, win
+do_win:
+    li t0, 1
+    sw t0, 0(s7)
+    call lock_mutex
+    la a0, msg_win
+    call print_str
+    call unlock_mutex
+    j end_game
 
+do_lose:
+    li t0, 2
+    sw t0, 0(s7)
+    call lock_mutex
+    la a0, msg_lose
+    call print_str
+    call unlock_mutex
+    j end_game
+
+// =========================================================
+// CORE 1: ASYNCHRONOUS DRAGON AI
+// =========================================================
+core1_main:
+    // Wait briefly to allow Core 0 to initialize the game state
+    li t0, 100
+core1_init_delay:
+    addi t0, t0, -1
+    bnez t0, core1_init_delay
+
+core1_loop:
+    // Check if game over
+    lw t0, 0(s7)
+    bnez t0, end_game
+
+    // Long Delay (Dragon Cooldown)
+    li t0, 1500
+core1_delay:
+    lw t1, 0(s7)
+    bnez t1, end_game
+    addi t0, t0, -1
+    bnez t0, core1_delay
+
+    // Check again before attacking
+    lw t0, 0(s7)
+    bnez t0, end_game
+    lw t0, 0(s5)
+    blez t0, end_game
+    
+    // Dragon attacks asynchronously!
+    call lock_mutex
+    la a0, msg_newline
+    call print_str
     la a0, msg_dragon_attack
     call print_str
     
-    // Random damage 10-32
+    // Damage Player
     lw t0, 0(s9)
     andi t0, t0, 15
     lw t1, 0(s9)
     srli t1, t1, 2
     andi t1, t1, 7
-    add t0, t0, t1  // 0-15 + 0-7 = 0-22
-    addi t0, t0, 10 // 10-32
+    add t0, t0, t1
+    addi t0, t0, 10
     
-    sub s0, s0, t0
-
-    // Print damage amount
+    lw t1, 0(s6)
+    sub t1, t1, t0
+    sw t1, 0(s6)
+    
     la a0, msg_dmg
     call print_str
     mv a0, t0
@@ -128,95 +205,102 @@ dragon_turn:
     call print_str
     la a0, msg_newline
     call print_str
-    la a0, msg_newline
-    call print_str
     
-    j battle_loop
-
-win:
-    la a0, msg_win
+    // Re-print prompt since we just interrupted the player
+    la a0, msg_prompt
     call print_str
-    j end_game
 
-lose:
-    la a0, msg_lose
-    call print_str
-    j end_game
+    call unlock_mutex
+    j core1_loop
 
+// =========================================================
+// COMMON
+// =========================================================
 end_game:
-    // Halt
+    // Halt Simulation
     li t0, 0x80000010
     sw zero, 0(t0)
 inf:
     j inf
 
 // ---------------------------------------------------------
-// Subroutines
+// Mutex Subroutines
 // ---------------------------------------------------------
+lock_mutex:
+lock_spin:
+    lw t6, 0(s8)
+    bnez t6, lock_spin
+    ret
 
-// print_str(a0: string address)
+unlock_mutex:
+    sw zero, 0(s8)
+    ret
+
+// ---------------------------------------------------------
+// Print Subroutines
+// ---------------------------------------------------------
 print_str:
-    mv t0, a0
+    mv t3, a0 // use t3 to avoid clobbering by print_num
 print_str_loop:
-    lb t1, 0(t0)
-    beqz t1, print_str_done
-    sb t1, 0(s10)       // write TX
-    addi t0, t0, 1
+    lb t4, 0(t3)
+    beqz t4, print_str_done
+    sb t4, 0(s10)
+    addi t3, t3, 1
     j print_str_loop
 print_str_done:
     ret
 
-// print_num(a0: positive number up to 999)
 print_num:
     bgez a0, print_num_start
     li a0, 0
 print_num_start:
-    li t0, 100
-    li t1, 0 // hundreds count
+    li t3, 100
+    li t4, 0
 hundreds_loop:
-    blt a0, t0, hundreds_done
-    sub a0, a0, t0
-    addi t1, t1, 1
+    blt a0, t3, hundreds_done
+    sub a0, a0, t3
+    addi t4, t4, 1
     j hundreds_loop
 hundreds_done:
     
-    li t0, 10
-    li t2, 0 // tens count
+    li t3, 10
+    li t5, 0
 tens_loop:
-    blt a0, t0, tens_done
-    sub a0, a0, t0
-    addi t2, t2, 1
+    blt a0, t3, tens_done
+    sub a0, a0, t3
+    addi t5, t5, 1
     j tens_loop
 tens_done:
 
-    // print hundreds if > 0
-    beqz t1, check_tens
-    addi t3, t1, 48
-    sb t3, 0(s10)
-    j do_print_tens // if hundreds > 0, always print tens even if 0
+    beqz t4, check_tens
+    addi t6, t4, 48
+    sb t6, 0(s10)
+    j do_print_tens
 
 check_tens:
-    beqz t2, print_ones
+    beqz t5, print_ones
 do_print_tens:
-    addi t3, t2, 48
-    sb t3, 0(s10)
+    addi t6, t5, 48
+    sb t6, 0(s10)
     
 print_ones:
-    addi t3, a0, 48
-    sb t3, 0(s10)
+    addi t6, a0, 48
+    sb t6, 0(s10)
     ret
 
 // ---------------------------------------------------------
 // Data
 // ---------------------------------------------------------
 msg_welcome:
-    .string "================================\n||       DRAGON SLAYER        ||\n================================\n\nA fearsome dragon stands before you!\n\n"
+    .string "================================\n||   DUAL-CORE DRAGON SLAYER  ||\n================================\n\nA fearsome dragon stands before you!\nIt moves in real-time... don't wait too long!\n\n"
 msg_stats_p:
-    .string "  [Player HP: "
+    .string "\n  [Player HP: "
 msg_stats_d:
     .string "]      [Dragon HP: "
 msg_menu:
     .string "]\n\nOptions:\n  1. Attack with Sword\n  2. Drink Health Potion\n\nCommand (1/2)> "
+msg_prompt:
+    .string "\nCommand (1/2)> "
 msg_attack:
     .string ">> You swing your mighty sword at the dragon!"
 msg_heal:

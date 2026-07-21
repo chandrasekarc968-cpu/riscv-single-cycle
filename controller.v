@@ -18,7 +18,8 @@ module controller (
     output       muldiv_en,
     output       csr_write,
     output       trap_ecall,
-    output       mret
+    output       mret,
+    output       sret
 );
 
     wire [1:0] alu_op;
@@ -42,7 +43,8 @@ module controller (
         .muldiv_en(muldiv_en),
         .csr_write(csr_write),
         .trap_ecall(trap_ecall),
-        .mret(mret)
+        .mret(mret),
+        .sret(sret)
     );
 
     // Instantiate ALU Decoder
@@ -74,6 +76,7 @@ module maindec (
     output reg       csr_write,
     output reg       trap_ecall,
     output reg       mret,
+    output reg       sret,
     output reg [2:0] imm_src,
     output reg [1:0] alu_op
 );
@@ -82,7 +85,7 @@ module maindec (
         // Default all signals to 0 to prevent accidental latches
         reg_write = 0; imm_src = 3'b000; alu_src = 0; mem_write = 0; mem_read = 0;
         result_src = 3'b000; branch = 0; alu_op = 2'b00; jump = 0; jalr = 0; muldiv_en = 0;
-        csr_write = 0; trap_ecall = 0; mret = 0;
+        csr_write = 0; trap_ecall = 0; mret = 0; sret = 0;
         
         case(op)
             7'b0000011: begin // Load (lw, lh, lb, lhu, lbu)
@@ -128,11 +131,13 @@ module maindec (
             7'b0001111: begin // FENCE — treated as NOP in single-cycle
                 // All outputs remain at default (0) — no side effects
             end
-            7'b1110011: begin // SYSTEM (CSR, ECALL, MRET)
+            7'b1110011: begin // SYSTEM (CSR, ECALL, MRET, SRET)
                 if (funct12 == 12'h000) begin
                     trap_ecall = 1; // ECALL
                 end else if (funct12 == 12'h302) begin
                     mret = 1;       // MRET
+                end else if (funct12 == 12'h102) begin
+                    sret = 1;       // SRET
                 end else begin
                     // CSR instructions (funct3 != 0)
                     csr_write = 1;

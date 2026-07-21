@@ -10,8 +10,10 @@ module riscv (
     output        mem_read,
     input         stall,
     output        cpu_stall_req,
-    input         ext_interrupt,
-    input  [31:0] hartid
+    input         ext_intr_m,
+    input         ext_intr_s,
+    input  [31:0] hartid,
+    output [31:0] satp_out
 );
 
     // Internal wires for Datapath and Control
@@ -32,6 +34,7 @@ module riscv (
     wire       csr_write;
     wire       trap_ecall;
     wire       mret;
+    wire       sret;
 
     // ---------------------------------------------------------
     // CONTROL UNIT
@@ -55,6 +58,7 @@ module riscv (
         .csr_write(csr_write),
         .trap_ecall(trap_ecall),
         .mret(mret),
+        .sret(sret),
         .branch(branch)
     );
 
@@ -176,14 +180,26 @@ module riscv (
                                          jalr_target;  // JALR (bit 0 cleared per spec)
 
     wire        interrupt_en;
-    wire        do_trap = (ext_interrupt & interrupt_en) | trap_ecall;
-    wire [31:0] trap_cause = (ext_interrupt & interrupt_en) ? 32'h80000007 : 32'h0000000B;
+    wire        trap_illegal;
+    wire [1:0]  priv;
+    
+    // Interrupts take priority over synchronous exceptions like ecall or illegal instructions
+    wire take_ext_m = ext_intr_m & (priv < 2'b11 | (priv == 2'b11 & interrupt_en));
+    wire take_ext_s = ext_intr_s & (priv < 2'b01 | (priv == 2'b01 & interrupt_en));
+    
+    wire        do_trap = take_ext_m | take_ext_s | trap_ecall | trap_illegal;
+    
+    wire [31:0] trap_cause = take_ext_m ? 32'h8000000B : // Machine external interrupt
+                             take_ext_s ? 32'h80000009 : // Supervisor external interrupt
+                             trap_illegal ? 32'h00000002 : // Illegal instruction
+                             32'h00000008 + {30'b0, priv}; // ECALL from U, S, or M-mode
+                             
     wire [31:0] epc;
     wire [31:0] trap_vector;
     wire [31:0] csr_rdata;
 
     wire [31:0] pc_next_trap = do_trap ? trap_vector :
-                               mret    ? epc :
+                               (mret | sret) ? epc :
                                pc_next;
 
     pc pcreg (
@@ -207,11 +223,17 @@ module riscv (
         .trap_cause(trap_cause),
         .trap_pc(pc),
         .mret(mret & ~stall),
+        .sret(sret & ~stall),
+        .trap_illegal(trap_illegal),
         
         .epc(epc),
         .trap_vector(trap_vector),
         .interrupt_en(interrupt_en),
-        .hartid(hartid)
+        .hartid(hartid),
+        .priv_out(priv),
+        .ext_intr_m(ext_intr_m),
+        .ext_intr_s(ext_intr_s),
+        .satp_out(satp_out)
     );
 
     // Register File

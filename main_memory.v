@@ -4,9 +4,9 @@ module main_memory #(
     input             clk,
     input             reset,
     input             req,      // Request memory operation
-    input      [3:0]  we,       // Write enable mask (word write if != 0, block read if == 0)
+    input             we,       // Write enable (1 = block write 128-bit, 0 = block read 128-bit)
     input      [31:0] a,        // Address
-    input      [31:0] wd,       // Write data (Word)
+    input      [127:0] wd,      // Write data (Cache Line, 4 words)
     output reg [127:0] rd,      // Read data (Cache Line, 4 words)
     output reg        ready     // High when operation is complete
 );
@@ -64,11 +64,11 @@ module main_memory #(
                     end
                     // synthesis translate_on
 
-                    if (|we) begin
-                        if (we[0]) RAM[word_addr][7:0]   <= wd[7:0];
-                        if (we[1]) RAM[word_addr][15:8]  <= wd[15:8];
-                        if (we[2]) RAM[word_addr][23:16] <= wd[23:16];
-                        if (we[3]) RAM[word_addr][31:24] <= wd[31:24];
+                    if (we) begin
+                        RAM[block_addr]   <= wd[31:0];
+                        RAM[block_addr+1] <= wd[63:32];
+                        RAM[block_addr+2] <= wd[95:64];
+                        RAM[block_addr+3] <= wd[127:96];
                     end else begin
                         rd <= {RAM[block_addr+3], RAM[block_addr+2], RAM[block_addr+1], RAM[block_addr]};
                     end
