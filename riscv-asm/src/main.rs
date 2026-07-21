@@ -168,9 +168,12 @@ fn main() -> io::Result<()> {
         // Check for label
         let mut instruction_part = line;
         if let Some(idx) = line.find(':') {
-            let label = line[..idx].trim();
-            labels.insert(label.to_string(), current_addr);
-            instruction_part = line[idx + 1..].trim();
+            let possible_label = line[..idx].trim();
+            // A valid label shouldn't contain spaces or quotes
+            if !possible_label.contains(|c: char| c.is_whitespace()) && !possible_label.contains('"') {
+                labels.insert(possible_label.to_string(), current_addr);
+                instruction_part = line[idx + 1..].trim();
+            }
         }
 
         // Skip empty lines and non-emitting directives
@@ -206,10 +209,10 @@ fn main() -> io::Result<()> {
             inst_args.push(s.to_string());
         } else if args_str.contains('(') {
             let mut parts_comma = args_str.split(',');
-            let rd = parts_comma.next().unwrap().trim();
+            let rd = parts_comma.next().unwrap_or_else(|| panic!("No comma in args_str: {}", args_str)).trim();
             inst_args.push(rd.to_string());
             
-            let mut offset_reg = parts_comma.next().unwrap().trim().split('(');
+            let mut offset_reg = parts_comma.next().unwrap_or_else(|| panic!("No second part in args_str: '{}' from line: '{}'", args_str, instruction_part)).trim().split('(');
             let offset = offset_reg.next().unwrap().trim();
             let mut reg = offset_reg.next().unwrap().trim().to_string();
             reg.pop(); // remove ')'
