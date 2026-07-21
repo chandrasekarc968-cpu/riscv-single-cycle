@@ -38,4 +38,4 @@ cd riscv-asm
 cargo run -- ../test.s ../program.hex
 ```
 
-This will assemble the instructions from `test.s` into `program.hex`, which will automatically be loaded by `imem.v` during your next processor simulation.
+This will assemble the instructions from `test.s` into `program.hex`, which will automatically be loaded by `imem.v` during your next processor simulation.cakl
