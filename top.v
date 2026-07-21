@@ -5,7 +5,7 @@ module top (
 
     wire [31:0] pc, instr, read_data;
     wire [31:0] data_adr, write_data;
-    wire        mem_write;
+    wire [3:0]  mem_write;
 
     // Instantiate the RISC-V Processor Core
     riscv rv32core (
