@@ -131,7 +131,7 @@ fn main() -> io::Result<()> {
             instruction_part = line[idx + 1..].trim();
         }
 
-        if instruction_part.is_empty() || instruction_part.starts_with('.') {
+        if instruction_part.is_empty() || (instruction_part.starts_with('.') && !instruction_part.starts_with(".word") && !instruction_part.starts_with(".string")) {
             continue;
         }
 
@@ -139,11 +139,13 @@ fn main() -> io::Result<()> {
         let mut parts = instruction_part.splitn(2, |c: char| c.is_whitespace());
         let mnemonic = parts.next().unwrap().to_lowercase();
         
-        let args_str = parts.next().unwrap_or("");
+        let args_str = parts.next().unwrap_or("").trim();
         let mut args: Vec<String> = Vec::new();
         
-        // Handle `lw x1, 4(x2)` format
-        if args_str.contains('(') {
+        if mnemonic == ".string" {
+            let s = args_str.trim_matches('"');
+            args.push(s.to_string());
+        } else if args_str.contains('(') {
             let mut parts_comma = args_str.split(',');
             let rd = parts_comma.next().unwrap().trim();
             args.push(rd.to_string());
@@ -176,8 +178,30 @@ fn main() -> io::Result<()> {
             "mv" => {
                 expanded.push(("addi".to_string(), vec![args[0].clone(), args[1].clone(), "0".to_string()]));
             }
+            "la" => {
+                let rd = &args[0];
+                let label = &args[1];
+                expanded.push(("lui".to_string(), vec![rd.clone(), format!("{}_hi", label)]));
+                expanded.push(("addi".to_string(), vec![rd.clone(), rd.clone(), format!("{}_lo", label)]));
+            }
             "nop" => {
                 expanded.push(("addi".to_string(), vec!["zero".to_string(), "zero".to_string(), "0".to_string()]));
+            }
+            ".word" => {
+                expanded.push((".word".to_string(), vec![args[0].clone()]));
+            }
+            ".string" => {
+                let s = &args[0];
+                let mut bytes = s.as_bytes().to_vec();
+                bytes.push(0); // null terminator
+                
+                for chunk in bytes.chunks(4) {
+                    let mut w = 0u32;
+                    for (i, &b) in chunk.iter().enumerate() {
+                        w |= (b as u32) << (i * 8);
+                    }
+                    expanded.push((".word".to_string(), vec![format!("0x{:x}", w)]));
+                }
             }
             _ => {
                 expanded.push((mnemonic.clone(), args.clone()));
@@ -207,6 +231,18 @@ fn main() -> io::Result<()> {
                     (addr as i32 - inst.address as i32) as u32
                 } else {
                     addr
+                }
+            } else if let Some(base_label) = imm_str.strip_suffix("_hi") {
+                if let Some(&addr) = labels.get(base_label) {
+                    (addr + 0x800) >> 12
+                } else {
+                    parse_imm(imm_str)
+                }
+            } else if let Some(base_label) = imm_str.strip_suffix("_lo") {
+                if let Some(&addr) = labels.get(base_label) {
+                    addr & 0xFFF
+                } else {
+                    parse_imm(imm_str)
                 }
             } else {
                 parse_imm(imm_str)
@@ -266,6 +302,8 @@ fn main() -> io::Result<()> {
             "jalr" => encoded = encode_i(0x67, 0x0, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
             "j"    => encoded = encode_j(0x6F, 0, get_imm(&inst.args[0], true)),
             "ret"  => encoded = encode_i(0x67, 0x0, 0, parse_reg("ra"), 0),
+            
+            ".word" => encoded = get_imm(&inst.args[0], false),
             
             _ => panic!("Unknown instruction: {}", inst.mnemonic),
         }

@@ -5,6 +5,7 @@ module controller (
     input        funct7b5,
     output [2:0] result_src,
     output       mem_write,
+    output       mem_read,
     output [3:0] alu_control,
     output       alu_src,
     output [2:0] imm_src,
@@ -21,6 +22,7 @@ module controller (
         .op(op),
         .result_src(result_src),
         .mem_write(mem_write),
+        .mem_read(mem_read),
         .branch(branch),
         .alu_src(alu_src),
         .reg_write(reg_write),
@@ -46,6 +48,7 @@ module maindec (
     input  [6:0] op,
     output reg [2:0] result_src,
     output reg       mem_write,
+    output reg       mem_read,
     output reg       branch,
     output reg       alu_src,
     output reg       reg_write,
@@ -57,13 +60,13 @@ module maindec (
 
     always @(*) begin
         // Default all signals to 0 to prevent accidental latches
-        reg_write = 0; imm_src = 3'b000; alu_src = 0; mem_write = 0; 
+        reg_write = 0; imm_src = 3'b000; alu_src = 0; mem_write = 0; mem_read = 0;
         result_src = 3'b000; branch = 0; alu_op = 2'b00; jump = 0; jalr = 0;
         
         case(op)
             7'b0000011: begin // Load (lw, lh, lb, lhu, lbu)
                 reg_write = 1; imm_src = 3'b000; alu_src = 1; 
-                result_src = 3'b001; alu_op = 2'b00; 
+                result_src = 3'b001; alu_op = 2'b00; mem_read = 1;
             end
             7'b0100011: begin // Store (sw, sh, sb)
                 imm_src = 3'b001; alu_src = 1; mem_write = 1; 

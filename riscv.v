@@ -6,7 +6,9 @@ module riscv (
     output [31:0] pc,
     output [31:0] alu_result,
     output [31:0] write_data,
-    output [3:0]  mem_write
+    output [3:0]  mem_write,
+    output        mem_read,
+    input         stall
 );
 
     // Internal wires for Datapath and Control
@@ -31,6 +33,7 @@ module riscv (
         .funct7b5(instr[30]),
         .result_src(result_src),
         .mem_write(mem_write_ctrl),
+        .mem_read(mem_read),
         .alu_control(alu_control),
         .alu_src(alu_src),
         .imm_src(imm_src),
@@ -102,7 +105,7 @@ module riscv (
         end
     end
 
-    assign mem_write = we_mask;
+    assign mem_write = stall ? 4'b0000 : we_mask;
     assign write_data = aligned_write_data;
 
     // Load logic (Read)
@@ -157,6 +160,7 @@ module riscv (
     pc pcreg (
         .clk(clk),
         .reset(reset),
+        .en(~stall),
         .pc_next(pc_next),
         .pc(pc)
     );
@@ -164,7 +168,7 @@ module riscv (
     // Register File
     regfile rf (
         .clk(clk),
-        .we3(reg_write),
+        .we3(reg_write & ~stall),
         .a1(instr[19:15]),
         .a2(instr[24:20]),
         .a3(instr[11:7]),
