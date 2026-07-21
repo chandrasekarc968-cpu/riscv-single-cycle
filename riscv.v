@@ -8,7 +8,9 @@ module riscv (
     output [31:0] write_data,
     output [3:0]  mem_write,
     output        mem_read,
-    input         stall
+    input         stall,
+    output        cpu_stall_req,
+    input         ext_interrupt
 );
 
     // Internal wires for Datapath and Control
@@ -24,6 +26,12 @@ module riscv (
     wire [31:0] result;
     wire [31:0] rf_write_data;
 
+    wire       muldiv_en;
+
+    wire       csr_write;
+    wire       trap_ecall;
+    wire       mret;
+
     // ---------------------------------------------------------
     // CONTROL UNIT
     // ---------------------------------------------------------
@@ -31,6 +39,8 @@ module riscv (
         .op(instr[6:0]),
         .funct3(instr[14:12]),
         .funct7b5(instr[30]),
+        .funct7b0(instr[25]),
+        .funct12(instr[31:20]),
         .result_src(result_src),
         .mem_write(mem_write_ctrl),
         .mem_read(mem_read),
@@ -40,6 +50,10 @@ module riscv (
         .reg_write(reg_write),
         .jump(jump),
         .jalr(jalr),
+        .muldiv_en(muldiv_en),
+        .csr_write(csr_write),
+        .trap_ecall(trap_ecall),
+        .mret(mret),
         .branch(branch)
     );
 
@@ -160,12 +174,42 @@ module riscv (
                      (pc_src == 2'b01) ? pc_target :   // Branch or JAL
                                          jalr_target;  // JALR (bit 0 cleared per spec)
 
+    wire        interrupt_en;
+    wire        do_trap = (ext_interrupt & interrupt_en) | trap_ecall;
+    wire [31:0] trap_cause = (ext_interrupt & interrupt_en) ? 32'h80000007 : 32'h0000000B;
+    wire [31:0] epc;
+    wire [31:0] trap_vector;
+    wire [31:0] csr_rdata;
+
+    wire [31:0] pc_next_trap = do_trap ? trap_vector :
+                               mret    ? epc :
+                               pc_next;
+
     pc pcreg (
         .clk(clk),
         .reset(reset),
         .en(~stall),
-        .pc_next(pc_next),
+        .pc_next(pc_next_trap),
         .pc(pc)
+    );
+
+    // CSR File
+    csr_file csrs (
+        .clk(clk),
+        .reset(reset),
+        .csr_addr(instr[31:20]),
+        .csr_wdata(srcA), // Simplest CSR write: RS1
+        .csr_we(csr_write & ~stall),
+        .csr_rdata(csr_rdata),
+        
+        .trap(do_trap & ~stall),
+        .trap_cause(trap_cause),
+        .trap_pc(pc),
+        .mret(mret & ~stall),
+        
+        .epc(epc),
+        .trap_vector(trap_vector),
+        .interrupt_en(interrupt_en)
     );
 
     // Register File
@@ -198,11 +242,29 @@ module riscv (
         .zero(zero)
     );
 
+    wire [31:0] muldiv_result;
+    wire        muldiv_ready;
+    
+    muldiv md_inst (
+        .clk(clk),
+        .reset(reset),
+        .start(muldiv_en),
+        .funct3(instr[14:12]),
+        .srcA(srcA),
+        .srcB(rf_write_data),
+        .result(muldiv_result),
+        .ready(muldiv_ready)
+    );
+    
+    assign cpu_stall_req = muldiv_en & ~muldiv_ready;
+
     // Writeback Logic
     assign result = (result_src == 3'b000) ? alu_result :
                     (result_src == 3'b001) ? formatted_read_data : 
                     (result_src == 3'b010) ? pc_plus_4 : 
                     (result_src == 3'b011) ? imm_ext :
-                    (result_src == 3'b100) ? pc_target : 32'b0;
+                    (result_src == 3'b100) ? pc_target : 
+                    (result_src == 3'b101) ? muldiv_result : 
+                    (result_src == 3'b110) ? csr_rdata : 32'b0;
 
 endmodule

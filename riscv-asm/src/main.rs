@@ -395,6 +395,16 @@ fn main() -> io::Result<()> {
             "or"   => encoded = encode_r(0x33, 0x6, 0x00, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
             "and"  => encoded = encode_r(0x33, 0x7, 0x00, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
             
+            // M-type (Multiply/Divide)
+            "mul"    => encoded = encode_r(0x33, 0x0, 0x01, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "mulh"   => encoded = encode_r(0x33, 0x1, 0x01, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "mulhsu" => encoded = encode_r(0x33, 0x2, 0x01, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "mulhu"  => encoded = encode_r(0x33, 0x3, 0x01, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "div"    => encoded = encode_r(0x33, 0x4, 0x01, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "divu"   => encoded = encode_r(0x33, 0x5, 0x01, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "rem"    => encoded = encode_r(0x33, 0x6, 0x01, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "remu"   => encoded = encode_r(0x33, 0x7, 0x01, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            
             // I-type ALU
             "addi"  => encoded = encode_i(0x13, 0x0, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
             "slli"  => encoded = encode_i(0x13, 0x1, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false) & 0x3F),
@@ -439,6 +449,12 @@ fn main() -> io::Result<()> {
             // SYSTEM instructions (encode as proper ECALL/EBREAK)
             "ecall"  => encoded = encode_i(0x73, 0x0, 0, 0, 0),
             "ebreak" => encoded = encode_i(0x73, 0x0, 0, 0, 1),
+            "mret"   => encoded = encode_i(0x73, 0x0, 0, 0, 0x302),
+            
+            // CSR instructions
+            "csrrw"  => encoded = encode_i(0x73, 0x1, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[2], ln, lt), get_imm(&inst.args[1], false)),
+            "csrr"   => encoded = encode_i(0x73, 0x1, parse_reg(&inst.args[0], ln, lt), 0, get_imm(&inst.args[1], false)),
+            "csrw"   => encoded = encode_i(0x73, 0x1, 0, parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[0], false)),
             // FENCE (encode as FENCE with default pred/succ)
             "fence"  => encoded = encode_i(0x0F, 0x0, 0, 0, 0x0FF),
             

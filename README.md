@@ -1,35 +1,79 @@
-# Single-Cycle RISC-V Processor
+# 🚀 Single-Cycle RV32IM Processor with Advanced Memory & CSRs
 
-A 32-bit single-cycle RISC-V processor (RV32I) implemented in Verilog, with a write-through data cache, MMIO peripherals, and a custom Rust-based assembler.
+[![RISC-V](https://img.shields.io/badge/ISA-RV32IM-blue.svg)](https://riscv.org/)
+[![Hardware](https://img.shields.io/badge/Hardware-Verilog-orange.svg)]()
+[![Assembler](https://img.shields.io/badge/Assembler-Rust-red.svg)]()
+[![License](https://img.shields.io/badge/License-MIT-green.svg)]()
 
-## Architecture Overview
+A 32-bit single-cycle RISC-V processor implemented in Verilog from the ground up. What started as a basic RV32I educational core has been **escalated** into a powerful architecture featuring the **RV32IM instruction set**, a unified 10MB main memory with an advanced **Instruction & Data Cache hierarchy**, **hardware interrupts (CSRs)**, and a custom Rust-based assembler.
 
-```
+---
+
+## 🏗️ Architecture Overview
+
+The core utilizes a Von Neumann architecture with unified main memory, arbitrated between an instruction cache and a 2-way set associative data cache. 
+
+```text
                           ┌─────────────────────────────────────────────────────────┐
                           │                    RISC-V Core (riscv.v)                │
                           │                                                         │
-  ┌──────────┐   instr    │  ┌──────────┐    ┌────────────┐    ┌─────┐             │
-  │  IMEM    │───────────►│  │Controller │───►│  Datapath   │───►│ ALU │             │
-  │ (16 KB)  │            │  │          │    │  (regfile,  │◄───│     │             │
-  │ imem.v   │◄───────────│  │controller│    │   extend,   │    └─────┘             │
-  └──────────┘    PC      │  │   .v     │    │    pc)      │                        │
-                          │  └──────────┘    └──────┬──────┘                        │
-                          │                         │ addr / data                   │
-                          └─────────────────────────┼───────────────────────────────┘
-                                                    │
-                                    ┌───────────────┼───────────────┐
-                                    │               │               │
-                              ┌─────▼─────┐   ┌────▼────┐   ┌──────▼──────┐
-                              │   MMIO    │   │  Data   │   │ Main Memory │
-                              │ (top.v)   │   │  Cache  │──►│   (10 MB)   │
-                              │           │   │ (1 KB)  │◄──│main_memory.v│
-                              │ UART TX/RX│   │dcache.v │   └─────────────┘
-                              │ Timer     │   └─────────┘
-                              │ Finish    │
-                              └───────────┘
+  ┌──────────┐   instr    │  ┌──────────┐    ┌────────────┐    ┌─────┐    ┌─────┐   │
+  │ I-Cache  │───────────►│  │Controller │───►│  Datapath   │───►│ ALU │    │ M/D │   │
+  │ (1 KB)   │            │  │          │    │  (regfile,  │◄───│     │    │Unit │   │
+  │ icache.v │◄───────────│  │controller│    │ csr_file,   │    └─────┘    └─────┘   │
+  └────┬─────┘    PC      │  │   .v     │    │   pc, ext)  │                        │
+       │                  │  └──────────┘    └──────┬──────┘                        │
+       │                  │                         │ addr / data                   │
+       │                  └─────────────────────────┼───────────────────────────────┘
+       │                                            │
+       │                            ┌───────────────┼───────────────┐
+       │                            │               │               │
+       │                      ┌─────▼─────┐   ┌────▼────┐           │
+       │                      │   MMIO    │   │ 2-Way   │           │
+       │                      │ (top.v)   │   │ D-Cache │           │
+       │                      │           │   │ (1 KB)  │           │
+       │                      │ UART TX/RX│   │dcache.v │           │
+       │                      │ Timer     │   └────┬────┘           │
+       │                      │ Finish    │        │                │
+       │                      └───────────┘        │                │
+       │                                           │                │
+       └─────────────────────────┐                 │                │
+                                 ▼                 ▼                │
+                              ┌───────────────────────┐             │
+                              │     Memory Arbiter    │             │
+                              │     (arbiter.v)       │             │
+                              └──────────┬────────────┘             │
+                                         │                          │
+                                         ▼                          │
+                              ┌───────────────────────┐             │
+                              │   Main Memory (10MB)  │◄────────────┘
+                              │   (main_memory.v)     │
+                              └───────────────────────┘
 ```
 
-## Supported Instructions (RV32I)
+---
+
+## ⚡ Key Features
+
+### 1. Hardware Math (M-Extension)
+A dedicated `muldiv.v` unit implements multi-cycle state machines for precise, hardware-accelerated integer multiplication and division. The pipeline automatically stalls until the math operation yields a result.
+
+### 2. Advanced Unified Memory Hierarchy
+Say goodbye to instantaneous split memory. This core features:
+- **10MB Unified Main Memory** with realistic, configurable access latency.
+- **2-Way Set Associative D-Cache** (1KB) with LRU replacement and write-allocate policies.
+- **Direct-Mapped I-Cache** (1KB) for high-speed instruction fetching.
+- **Memory Arbiter** to seamlessly route parallel I-Cache and D-Cache requests to the slower main RAM.
+
+### 3. OS-Level Privilege & Interrupts (CSRs)
+The `csr_file.v` module introduces Machine-Mode Control and Status Registers:
+- Tracks `mstatus`, `mtvec`, `mepc`, and `mcause`.
+- Fully supports `ecall`, `mret`, and timer interrupts.
+- A built-in hardware timer interrupt fires automatically every 4,096 cycles, allowing for preemptive multitasking experiments!
+
+---
+
+## 📚 Supported Instructions (RV32IM + System)
 
 | Category | Instructions |
 |---|---|
@@ -39,48 +83,49 @@ A 32-bit single-cycle RISC-V processor (RV32I) implemented in Verilog, with a wr
 | **Branches** | `beq`, `bne`, `blt`, `bge`, `bltu`, `bgeu` |
 | **Jumps** | `jal`, `jalr` |
 | **Upper Immediate** | `lui`, `auipc` |
-| **System** | `fence`, `ecall`, `ebreak` (treated as NOPs) |
+| **Multiply/Divide (M)**| `mul`, `mulh`, `mulhsu`, `mulhu`, `div`, `divu`, `rem`, `remu` |
+| **System / CSRs** | `csrrw`, `csrr`, `csrw`, `ecall`, `ebreak`, `mret`, `fence` |
 
-## Memory Map
+---
+
+## 🗺️ Memory Map
 
 | Address | Size | Access | Description |
 |---|---|---|---|
-| `0x00000000` – `0x009FFFFF` | 10 MB | R/W | Main RAM (data + program storage) |
+| `0x00000000` – `0x009FFFFF` | 10 MB | R/W | Unified Main RAM (Instructions + Data) |
 | `0x80000000` | 1 byte | W | UART TX — write a byte to output |
 | `0x80000004` | 1 byte | R | UART RX — read a byte (stalls until input ready) |
 | `0x80000008` | 4 bytes | R | Timer — cycle counter (read-only) |
 | `0x8000000C` | 4 bytes | R | Cycle counter (alias of timer) |
 | `0x80000010` | 4 bytes | W | Simulation finish — write any value to halt |
 
-## Core Components
+---
+
+## 🧩 Core Components
 
 | File | Description |
 |---|---|
-| `riscv.v` | Core datapath — branch evaluation, memory interface (sign-extension & alignment), register file connections |
-| `controller.v` | Instruction decoder: main decoder + ALU decoder, orchestrates datapath muxes |
+| `riscv.v` | Core datapath — branch evaluation, memory interface, hardware trap logic |
+| `controller.v` | Instruction decoder: main decoder + ALU decoder, orchestrates datapath and pipeline stalls |
 | `alu.v` | Arithmetic and logic operations, branch condition evaluation |
+| `muldiv.v` | Hardware multiplier and restoring divider (multi-cycle state machine) |
+| `csr_file.v` | Control and Status Registers (`mstatus`, `mtvec`, `mepc`, `mcause`) and interrupt handling |
 | `regfile.v` | 32×32-bit register file with async read, sync write, hardwired x0=0 |
-| `extend.v` | Immediate sign-extension for I/S/B/J/U-type formats |
-| `pc.v` | Program counter with enable (for stalls) and async reset |
-| `imem.v` | 16 KB instruction memory, loaded from `program.hex` via `$readmemh` |
-| `dcache.v` | 1 KB direct-mapped write-through data cache (64 lines × 16B), with write-allocate |
-| `main_memory.v` | 10 MB main RAM with configurable latency (default 4 cycles) |
-| `top.v` | Top-level integration: CPU + IMEM + Cache + Main Memory + MMIO |
+| `dcache.v` | 1 KB 2-Way Set Associative data cache with LRU replacement and write-allocate |
+| `icache.v` | 1 KB Direct-Mapped instruction cache |
+| `arbiter.v` | Memory Arbiter to resolve requests between I-Cache and D-Cache to main memory |
+| `main_memory.v` | 10 MB unified RAM with configurable latency (default 4 cycles) |
+| `top.v` | Top-level integration: CPU + Caches + Arbiter + Main Memory + MMIO |
 | `tb.v` | Testbench: clock generation, reset, timeout, VCD waveform dump |
 
-## RISC-V Assembler (Rust)
+---
 
-The `riscv-asm/` directory contains a custom, zero-dependency RV32I assembler written in Rust. It compiles `.s` assembly files into `program.hex` files compatible with the Verilog `$readmemh` system task.
+## 🛠️ RISC-V Assembler (Rust)
 
-### Assembler Features
+The `riscv-asm/` directory contains a custom, zero-dependency **RV32IM assembler** written in Rust. It compiles `.s` assembly files directly into `program.hex` files compatible with the Verilog `$readmemh` system task.
 
-- **2-pass assembly** with automatic label address resolution
-- **Escape sequences** in `.string` directives (`\n`, `\t`, `\\`, `\"`, `\0`)
-- **Error messages** with line numbers and source context
-- **Data directives**: `.word`, `.string`, `.byte`
-- **Comment styles**: `//`, `#`, `;`
-
-### Supported Pseudo-Instructions
+<details>
+<summary><b>View Supported Pseudo-Instructions</b></summary>
 
 | Pseudo | Expansion |
 |---|---|
@@ -102,8 +147,14 @@ The `riscv-asm/` directory contains a custom, zero-dependency RV32I assembler wr
 | `ret` | `jalr x0, ra, 0` |
 | `call label` | `jal ra, label` |
 | `tail label` | `jal x0, label` |
+| `csrr rd, csr` | `csrrw rd, csr, x0` |
+| `csrw csr, rs` | `csrrw x0, csr, rs` |
 
-## Getting Started
+</details>
+
+---
+
+## 🚀 Getting Started
 
 ### Prerequisites
 
@@ -111,39 +162,39 @@ The `riscv-asm/` directory contains a custom, zero-dependency RV32I assembler wr
 - **Waveform viewer**: [GTKWave](http://gtkwave.sourceforge.net/) (optional, for `.vcd` files)
 - **Rust toolchain**: [rustup.rs](https://rustup.rs/) (for the assembler)
 
-### Build & Run
+### Build & Run Diagnostics
 
 ```bash
-# 1. Assemble your program
+# 1. Assemble the M-extension test program
 cd riscv-asm
-cargo run -- ../test.s ../program.hex
+cargo run -- ../test_muldiv.s ../program.hex
 
 # 2. Compile the Verilog design
 cd ..
-iverilog -o sim.vvp tb.v top.v riscv.v controller.v alu.v extend.v regfile.v pc.v imem.v dcache.v main_memory.v
+iverilog -o sim.vvp tb.v top.v riscv.v controller.v alu.v extend.v regfile.v pc.v icache.v dcache.v arbiter.v main_memory.v muldiv.v csr_file.v
 
 # 3. Run the simulation
 vvp sim.vvp
-
-# 4. (Optional) View waveforms
-gtkwave wave.vcd
 ```
 
-### Running the "Dragon Slayer" RPG
+### 🐉 Running the "Dragon Slayer" RPG
+
+Experience the processor running a fully interactive MMIO game!
 
 ```bash
 cd riscv-asm
 cargo run -- ../game.s ../program.hex
 cd ..
-iverilog -o sim.vvp tb.v top.v riscv.v controller.v alu.v extend.v regfile.v pc.v imem.v dcache.v main_memory.v
+iverilog -o sim.vvp tb.v top.v riscv.v controller.v alu.v extend.v regfile.v pc.v icache.v dcache.v arbiter.v main_memory.v muldiv.v csr_file.v
 vvp sim.vvp
 ```
 
-The game uses UART MMIO for I/O — you'll see a text-based RPG interface. Type '1' or '2' and press Enter to fight the dragon!
+The game uses UART MMIO for I/O — you'll see a text-based RPG interface right in your terminal. Type '1' or '2' and press Enter to fight the dragon!
 
-## Design Notes
+---
 
-- **Single-cycle**: Each instruction completes in one clock cycle (plus cache/memory stalls).
-- **Cache stalls**: The data cache introduces multi-cycle stalls on read misses and all writes (write-through policy). Write-allocate ensures the cache stays coherent.
-- **Memory latency**: Main memory has a configurable latency parameter (default: 4 cycles) to simulate realistic DRAM timing.
-- **JALR bit-0 clear**: Per RISC-V spec §2.5, the JALR target address has bit 0 forced to zero.
+## 📝 Design Notes
+
+- **Multi-cycle Extensions**: While mostly single-cycle, the processor asserts hardware stall requests during multi-cycle operations like M-extension math (`mul`, `div`), cache misses, and timer interrupts.
+- **Cache Architecture**: The data cache utilizes a 2-way set associative organization with an LRU tracking bit per set. The instruction cache is direct-mapped. Both caches route to unified main memory via an arbiter.
+- **Hardware Traps**: Basic machine-mode privileges are implemented. Setting `mstatus.MIE` enables a hardware timer interrupt that fires every 4096 cycles, trapping to the vector loaded in `mtvec`. Return via `mret`.

@@ -12,7 +12,13 @@ module controller (
     output       reg_write,
     output       jump,
     output       jalr,
-    output       branch
+    output       branch,
+    input        funct7b0,
+    input [11:0] funct12,
+    output       muldiv_en,
+    output       csr_write,
+    output       trap_ecall,
+    output       mret
 );
 
     wire [1:0] alu_op;
@@ -29,7 +35,14 @@ module controller (
         .jump(jump),
         .jalr(jalr),
         .imm_src(imm_src),
-        .alu_op(alu_op)
+        .alu_op(alu_op),
+        .funct7b5(funct7b5),
+        .funct7b0(funct7b0),
+        .funct12(funct12),
+        .muldiv_en(muldiv_en),
+        .csr_write(csr_write),
+        .trap_ecall(trap_ecall),
+        .mret(mret)
     );
 
     // Instantiate ALU Decoder
@@ -46,6 +59,8 @@ endmodule
 // 2. Main Decoder
 module maindec (
     input  [6:0] op,
+    input        funct7b5,
+    input        funct7b0,
     output reg [2:0] result_src,
     output reg       mem_write,
     output reg       mem_read,
@@ -54,6 +69,11 @@ module maindec (
     output reg       reg_write,
     output reg       jump,
     output reg       jalr,
+    output reg       muldiv_en,
+    input      [11:0] funct12,
+    output reg       csr_write,
+    output reg       trap_ecall,
+    output reg       mret,
     output reg [2:0] imm_src,
     output reg [1:0] alu_op
 );
@@ -61,7 +81,8 @@ module maindec (
     always @(*) begin
         // Default all signals to 0 to prevent accidental latches
         reg_write = 0; imm_src = 3'b000; alu_src = 0; mem_write = 0; mem_read = 0;
-        result_src = 3'b000; branch = 0; alu_op = 2'b00; jump = 0; jalr = 0;
+        result_src = 3'b000; branch = 0; alu_op = 2'b00; jump = 0; jalr = 0; muldiv_en = 0;
+        csr_write = 0; trap_ecall = 0; mret = 0;
         
         case(op)
             7'b0000011: begin // Load (lw, lh, lb, lhu, lbu)
@@ -72,9 +93,15 @@ module maindec (
                 imm_src = 3'b001; alu_src = 1; mem_write = 1; 
                 alu_op = 2'b00; 
             end
-            7'b0110011: begin // R-type
-                reg_write = 1; alu_src = 0; result_src = 3'b000; 
-                alu_op = 2'b10; 
+            7'b0110011: begin // R-type (ALU or M-extension)
+                reg_write = 1; alu_src = 0; 
+                alu_op = 2'b10;
+                if (funct7b0) begin
+                    muldiv_en = 1;
+                    result_src = 3'b101; // New result_src for M-extension
+                end else begin
+                    result_src = 3'b000; 
+                end
             end
             7'b0010011: begin // I-type ALU
                 reg_write = 1; imm_src = 3'b000; alu_src = 1; 
@@ -101,8 +128,17 @@ module maindec (
             7'b0001111: begin // FENCE — treated as NOP in single-cycle
                 // All outputs remain at default (0) — no side effects
             end
-            7'b1110011: begin // SYSTEM (ECALL / EBREAK) — treated as NOP
-                // All outputs remain at default (0) — no side effects
+            7'b1110011: begin // SYSTEM (CSR, ECALL, MRET)
+                if (funct12 == 12'h000) begin
+                    trap_ecall = 1; // ECALL
+                end else if (funct12 == 12'h302) begin
+                    mret = 1;       // MRET
+                end else begin
+                    // CSR instructions (funct3 != 0)
+                    csr_write = 1;
+                    reg_write = 1;
+                    result_src = 3'b110; // New result_src for CSR read data
+                end
             end
             default: begin // Unknown opcode — safe defaults (NOP behavior)
                 // All outputs already set to 0 above
