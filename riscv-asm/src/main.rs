@@ -3,7 +3,7 @@ use std::env;
 use std::fs::File;
 use std::io::{self, BufRead, Write};
 
-fn parse_reg(reg: &str) -> u32 {
+fn parse_reg(reg: &str, line_num: usize, line_text: &str) -> u32 {
     let reg = reg.trim();
     match reg {
         "x0" | "zero" => 0,
@@ -38,7 +38,10 @@ fn parse_reg(reg: &str) -> u32 {
         "x29" | "t4" => 29,
         "x30" | "t5" => 30,
         "x31" | "t6" => 31,
-        _ => panic!("Unknown register: {}", reg),
+        _ => {
+            eprintln!("Error on line {}: Unknown register '{}'\n  --> {}", line_num, reg, line_text);
+            std::process::exit(1);
+        }
     }
 }
 
@@ -49,9 +52,42 @@ fn parse_imm(imm: &str) -> u32 {
     } else if let Some(stripped) = imm.strip_prefix("-0x") {
         let val = u32::from_str_radix(stripped, 16).expect("Invalid hex immediate");
         (0_u32).wrapping_sub(val)
+    } else if let Some(stripped) = imm.strip_prefix("0b") {
+        u32::from_str_radix(stripped, 2).expect("Invalid binary immediate")
     } else {
-        imm.parse::<i32>().expect(&format!("Invalid immediate: {}", imm)) as u32
+        imm.parse::<i32>().unwrap_or_else(|_| {
+            eprintln!("Error: Invalid immediate value '{}'", imm);
+            std::process::exit(1);
+        }) as u32
     }
+}
+
+/// Process escape sequences in a string literal
+fn process_escapes(s: &str) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push(0x0A),  // newline
+                Some('r') => result.push(0x0D),  // carriage return
+                Some('t') => result.push(0x09),  // tab
+                Some('0') => result.push(0x00),   // null
+                Some('\\') => result.push(0x5C),  // backslash
+                Some('"') => result.push(0x22),   // double quote
+                Some('\'') => result.push(0x27),  // single quote
+                Some(other) => {
+                    // Unknown escape: emit literally
+                    result.push(b'\\');
+                    result.push(other as u8);
+                }
+                None => result.push(b'\\'),
+            }
+        } else {
+            result.push(c as u8);
+        }
+    }
+    result
 }
 
 fn encode_r(opcode: u32, funct3: u32, funct7: u32, rd: u32, rs1: u32, rs2: u32) -> u32 {
@@ -92,6 +128,7 @@ fn encode_j(opcode: u32, rd: u32, imm: u32) -> u32 {
 struct ParsedLine {
     address: u32,
     original: String,
+    line_num: usize,
     mnemonic: String,
     args: Vec<String>,
 }
@@ -115,10 +152,15 @@ fn main() -> io::Result<()> {
     let mut current_addr = 0;
 
     // Pass 1: Parse and collect labels
-    for line in reader.lines() {
-        let line = line?;
-        // Remove comments
-        let line = line.split('#').next().unwrap().split("//").next().unwrap().trim();
+    for (line_idx, line) in reader.lines().enumerate() {
+        let raw_line = line?;
+        let line_num = line_idx + 1;
+        // Remove comments (supports //, #, and ;)
+        let line = raw_line
+            .split('#').next().unwrap()
+            .split("//").next().unwrap()
+            .split(';').next().unwrap()
+            .trim();
         if line.is_empty() {
             continue;
         }
@@ -131,7 +173,23 @@ fn main() -> io::Result<()> {
             instruction_part = line[idx + 1..].trim();
         }
 
-        if instruction_part.is_empty() || (instruction_part.starts_with('.') && !instruction_part.starts_with(".word") && !instruction_part.starts_with(".string")) {
+        // Skip empty lines and non-emitting directives
+        if instruction_part.is_empty() {
+            continue;
+        }
+        // Recognized but ignored directives
+        if instruction_part == ".text" || instruction_part == ".data"
+            || instruction_part == ".globl" || instruction_part.starts_with(".global")
+            || instruction_part.starts_with(".align") || instruction_part.starts_with(".section")
+        {
+            continue;
+        }
+        // Skip unknown directives (except .word, .string, .byte which emit data)
+        if instruction_part.starts_with('.')
+            && !instruction_part.starts_with(".word")
+            && !instruction_part.starts_with(".string")
+            && !instruction_part.starts_with(".byte")
+        {
             continue;
         }
 
@@ -140,59 +198,127 @@ fn main() -> io::Result<()> {
         let mnemonic = parts.next().unwrap().to_lowercase();
         
         let args_str = parts.next().unwrap_or("").trim();
-        let mut args: Vec<String> = Vec::new();
+        let mut inst_args: Vec<String> = Vec::new();
         
         if mnemonic == ".string" {
+            // Extract the content between quotes, preserving escape sequences
             let s = args_str.trim_matches('"');
-            args.push(s.to_string());
+            inst_args.push(s.to_string());
         } else if args_str.contains('(') {
             let mut parts_comma = args_str.split(',');
             let rd = parts_comma.next().unwrap().trim();
-            args.push(rd.to_string());
+            inst_args.push(rd.to_string());
             
             let mut offset_reg = parts_comma.next().unwrap().trim().split('(');
             let offset = offset_reg.next().unwrap().trim();
             let mut reg = offset_reg.next().unwrap().trim().to_string();
             reg.pop(); // remove ')'
-            args.push(reg);
-            args.push(offset.to_string());
+            inst_args.push(reg);
+            inst_args.push(offset.to_string());
         } else {
-            args = args_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            inst_args = args_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         }
         
         // Pseudo-instructions expansion
         let mut expanded = Vec::new();
         match mnemonic.as_str() {
             "li" => {
-                let rd = &args[0];
-                let imm = parse_imm(&args[1]);
+                let rd = &inst_args[0];
+                let imm = parse_imm(&inst_args[1]);
                 if (imm as i32) >= -2048 && (imm as i32) <= 2047 {
-                    expanded.push(("addi".to_string(), vec![rd.clone(), "zero".to_string(), imm.to_string()]));
+                    // Use hex format to ensure u32 values survive round-trip through parse_imm
+                    expanded.push(("addi".to_string(), vec![rd.clone(), "zero".to_string(), format!("0x{:x}", imm)]));
                 } else {
                     let upper = (imm + 0x800) >> 12;
                     let lower = imm & 0xFFF;
-                    expanded.push(("lui".to_string(), vec![rd.clone(), upper.to_string()]));
-                    expanded.push(("addi".to_string(), vec![rd.clone(), rd.clone(), lower.to_string()]));
+                    expanded.push(("lui".to_string(), vec![rd.clone(), format!("0x{:x}", upper)]));
+                    expanded.push(("addi".to_string(), vec![rd.clone(), rd.clone(), format!("0x{:x}", lower)]));
                 }
             }
             "mv" => {
-                expanded.push(("addi".to_string(), vec![args[0].clone(), args[1].clone(), "0".to_string()]));
+                expanded.push(("addi".to_string(), vec![inst_args[0].clone(), inst_args[1].clone(), "0".to_string()]));
             }
             "la" => {
-                let rd = &args[0];
-                let label = &args[1];
+                let rd = &inst_args[0];
+                let label = &inst_args[1];
                 expanded.push(("lui".to_string(), vec![rd.clone(), format!("{}_hi", label)]));
                 expanded.push(("addi".to_string(), vec![rd.clone(), rd.clone(), format!("{}_lo", label)]));
             }
             "nop" => {
                 expanded.push(("addi".to_string(), vec!["zero".to_string(), "zero".to_string(), "0".to_string()]));
             }
+            // Branch pseudo-instructions
+            "beqz" => {
+                // beqz rs, label -> beq rs, x0, label
+                expanded.push(("beq".to_string(), vec![inst_args[0].clone(), "zero".to_string(), inst_args[1].clone()]));
+            }
+            "bnez" => {
+                // bnez rs, label -> bne rs, x0, label
+                expanded.push(("bne".to_string(), vec![inst_args[0].clone(), "zero".to_string(), inst_args[1].clone()]));
+            }
+            "blez" => {
+                // blez rs, label -> bge x0, rs, label
+                expanded.push(("bge".to_string(), vec!["zero".to_string(), inst_args[0].clone(), inst_args[1].clone()]));
+            }
+            "bgtz" => {
+                // bgtz rs, label -> blt x0, rs, label
+                expanded.push(("blt".to_string(), vec!["zero".to_string(), inst_args[0].clone(), inst_args[1].clone()]));
+            }
+            "bgez" => {
+                // bgez rs, label -> bge rs, x0, label
+                expanded.push(("bge".to_string(), vec![inst_args[0].clone(), "zero".to_string(), inst_args[1].clone()]));
+            }
+            "bltz" => {
+                // bltz rs, label -> blt rs, x0, label
+                expanded.push(("blt".to_string(), vec![inst_args[0].clone(), "zero".to_string(), inst_args[1].clone()]));
+            }
+            // ALU pseudo-instructions
+            "seqz" => {
+                // seqz rd, rs -> sltiu rd, rs, 1
+                expanded.push(("sltiu".to_string(), vec![inst_args[0].clone(), inst_args[1].clone(), "1".to_string()]));
+            }
+            "snez" => {
+                // snez rd, rs -> sltu rd, x0, rs
+                expanded.push(("sltu".to_string(), vec![inst_args[0].clone(), "zero".to_string(), inst_args[1].clone()]));
+            }
+            "neg" => {
+                // neg rd, rs -> sub rd, x0, rs
+                expanded.push(("sub".to_string(), vec![inst_args[0].clone(), "zero".to_string(), inst_args[1].clone()]));
+            }
+            "not" => {
+                // not rd, rs -> xori rd, rs, -1
+                expanded.push(("xori".to_string(), vec![inst_args[0].clone(), inst_args[1].clone(), "-1".to_string()]));
+            }
+            // Jump pseudo-instructions
+            "call" => {
+                // call label -> jal ra, label
+                expanded.push(("jal".to_string(), vec!["ra".to_string(), inst_args[0].clone()]));
+            }
+            "tail" => {
+                // tail label -> jal x0, label
+                expanded.push(("jal".to_string(), vec!["zero".to_string(), inst_args[0].clone()]));
+            }
+            // Data directives
             ".word" => {
-                expanded.push((".word".to_string(), vec![args[0].clone()]));
+                expanded.push((".word".to_string(), vec![inst_args[0].clone()]));
+            }
+            ".byte" => {
+                // Pack bytes into words (little-endian, like .string but for raw data)
+                let mut bytes: Vec<u8> = Vec::new();
+                for arg in &inst_args {
+                    bytes.push(parse_imm(arg) as u8);
+                }
+                for chunk in bytes.chunks(4) {
+                    let mut w = 0u32;
+                    for (i, &b) in chunk.iter().enumerate() {
+                        w |= (b as u32) << (i * 8);
+                    }
+                    expanded.push((".word".to_string(), vec![format!("0x{:x}", w)]));
+                }
             }
             ".string" => {
-                let s = &args[0];
-                let mut bytes = s.as_bytes().to_vec();
+                let s = &inst_args[0];
+                let mut bytes = process_escapes(s);
                 bytes.push(0); // null terminator
                 
                 for chunk in bytes.chunks(4) {
@@ -204,7 +330,7 @@ fn main() -> io::Result<()> {
                 }
             }
             _ => {
-                expanded.push((mnemonic.clone(), args.clone()));
+                expanded.push((mnemonic.clone(), inst_args.clone()));
             }
         }
 
@@ -212,6 +338,7 @@ fn main() -> io::Result<()> {
             instructions.push(ParsedLine {
                 address: current_addr,
                 original: instruction_part.to_string(),
+                line_num,
                 mnemonic: m,
                 args: a,
             });
@@ -221,8 +348,8 @@ fn main() -> io::Result<()> {
 
     // Pass 2: Encode
     let mut out_file = File::create(output_path)?;
-    for inst in instructions {
-        let mut encoded: u32 = 0;
+    for inst in &instructions {
+        let encoded: u32;
         
         // Resolve imm if it's a label
         let get_imm = |imm_str: &str, is_branch: bool| -> u32 {
@@ -249,68 +376,82 @@ fn main() -> io::Result<()> {
             }
         };
 
+        let ln = inst.line_num;
+        let lt = &inst.original;
+
         match inst.mnemonic.as_str() {
             // R-type
-            "add"  => encoded = encode_r(0x33, 0x0, 0x00, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), parse_reg(&inst.args[2])),
-            "sub"  => encoded = encode_r(0x33, 0x0, 0x20, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), parse_reg(&inst.args[2])),
-            "sll"  => encoded = encode_r(0x33, 0x1, 0x00, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), parse_reg(&inst.args[2])),
-            "slt"  => encoded = encode_r(0x33, 0x2, 0x00, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), parse_reg(&inst.args[2])),
-            "sltu" => encoded = encode_r(0x33, 0x3, 0x00, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), parse_reg(&inst.args[2])),
-            "xor"  => encoded = encode_r(0x33, 0x4, 0x00, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), parse_reg(&inst.args[2])),
-            "srl"  => encoded = encode_r(0x33, 0x5, 0x00, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), parse_reg(&inst.args[2])),
-            "sra"  => encoded = encode_r(0x33, 0x5, 0x20, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), parse_reg(&inst.args[2])),
-            "or"   => encoded = encode_r(0x33, 0x6, 0x00, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), parse_reg(&inst.args[2])),
-            "and"  => encoded = encode_r(0x33, 0x7, 0x00, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), parse_reg(&inst.args[2])),
+            "add"  => encoded = encode_r(0x33, 0x0, 0x00, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "sub"  => encoded = encode_r(0x33, 0x0, 0x20, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "sll"  => encoded = encode_r(0x33, 0x1, 0x00, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "slt"  => encoded = encode_r(0x33, 0x2, 0x00, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "sltu" => encoded = encode_r(0x33, 0x3, 0x00, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "xor"  => encoded = encode_r(0x33, 0x4, 0x00, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "srl"  => encoded = encode_r(0x33, 0x5, 0x00, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "sra"  => encoded = encode_r(0x33, 0x5, 0x20, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "or"   => encoded = encode_r(0x33, 0x6, 0x00, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
+            "and"  => encoded = encode_r(0x33, 0x7, 0x00, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[2], ln, lt)),
             
             // I-type ALU
-            "addi"  => encoded = encode_i(0x13, 0x0, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
-            "slli"  => encoded = encode_i(0x13, 0x1, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false) & 0x3F),
-            "slti"  => encoded = encode_i(0x13, 0x2, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
-            "sltiu" => encoded = encode_i(0x13, 0x3, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
-            "xori"  => encoded = encode_i(0x13, 0x4, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
-            "srli"  => encoded = encode_i(0x13, 0x5, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false) & 0x3F),
-            "srai"  => encoded = encode_i(0x13, 0x5, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), (get_imm(&inst.args[2], false) & 0x3F) | 0x400),
-            "ori"   => encoded = encode_i(0x13, 0x6, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
-            "andi"  => encoded = encode_i(0x13, 0x7, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
+            "addi"  => encoded = encode_i(0x13, 0x0, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
+            "slli"  => encoded = encode_i(0x13, 0x1, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false) & 0x3F),
+            "slti"  => encoded = encode_i(0x13, 0x2, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
+            "sltiu" => encoded = encode_i(0x13, 0x3, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
+            "xori"  => encoded = encode_i(0x13, 0x4, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
+            "srli"  => encoded = encode_i(0x13, 0x5, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false) & 0x3F),
+            "srai"  => encoded = encode_i(0x13, 0x5, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), (get_imm(&inst.args[2], false) & 0x3F) | 0x400),
+            "ori"   => encoded = encode_i(0x13, 0x6, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
+            "andi"  => encoded = encode_i(0x13, 0x7, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
             
             // Loads
-            "lb"  => encoded = encode_i(0x03, 0x0, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
-            "lh"  => encoded = encode_i(0x03, 0x1, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
-            "lw"  => encoded = encode_i(0x03, 0x2, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
-            "lbu" => encoded = encode_i(0x03, 0x4, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
-            "lhu" => encoded = encode_i(0x03, 0x5, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
+            "lb"  => encoded = encode_i(0x03, 0x0, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
+            "lh"  => encoded = encode_i(0x03, 0x1, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
+            "lw"  => encoded = encode_i(0x03, 0x2, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
+            "lbu" => encoded = encode_i(0x03, 0x4, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
+            "lhu" => encoded = encode_i(0x03, 0x5, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
 
             // Stores
-            "sb" => encoded = encode_s(0x23, 0x0, parse_reg(&inst.args[1]), parse_reg(&inst.args[0]), get_imm(&inst.args[2], false)),
-            "sh" => encoded = encode_s(0x23, 0x1, parse_reg(&inst.args[1]), parse_reg(&inst.args[0]), get_imm(&inst.args[2], false)),
-            "sw" => encoded = encode_s(0x23, 0x2, parse_reg(&inst.args[1]), parse_reg(&inst.args[0]), get_imm(&inst.args[2], false)),
+            "sb" => encoded = encode_s(0x23, 0x0, parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[0], ln, lt), get_imm(&inst.args[2], false)),
+            "sh" => encoded = encode_s(0x23, 0x1, parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[0], ln, lt), get_imm(&inst.args[2], false)),
+            "sw" => encoded = encode_s(0x23, 0x2, parse_reg(&inst.args[1], ln, lt), parse_reg(&inst.args[0], ln, lt), get_imm(&inst.args[2], false)),
 
             // Branches
-            "beq"  => encoded = encode_b(0x63, 0x0, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], true)),
-            "bne"  => encoded = encode_b(0x63, 0x1, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], true)),
-            "blt"  => encoded = encode_b(0x63, 0x4, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], true)),
-            "bge"  => encoded = encode_b(0x63, 0x5, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], true)),
-            "bltu" => encoded = encode_b(0x63, 0x6, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], true)),
-            "bgeu" => encoded = encode_b(0x63, 0x7, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], true)),
+            "beq"  => encoded = encode_b(0x63, 0x0, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], true)),
+            "bne"  => encoded = encode_b(0x63, 0x1, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], true)),
+            "blt"  => encoded = encode_b(0x63, 0x4, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], true)),
+            "bge"  => encoded = encode_b(0x63, 0x5, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], true)),
+            "bltu" => encoded = encode_b(0x63, 0x6, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], true)),
+            "bgeu" => encoded = encode_b(0x63, 0x7, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], true)),
 
             // U-type
-            "lui"   => encoded = encode_u(0x37, parse_reg(&inst.args[0]), get_imm(&inst.args[1], false) << 12),
-            "auipc" => encoded = encode_u(0x17, parse_reg(&inst.args[0]), get_imm(&inst.args[1], false) << 12),
+            "lui"   => encoded = encode_u(0x37, parse_reg(&inst.args[0], ln, lt), get_imm(&inst.args[1], false) << 12),
+            "auipc" => encoded = encode_u(0x17, parse_reg(&inst.args[0], ln, lt), get_imm(&inst.args[1], false) << 12),
 
             // J-type
-            "jal"  => encoded = encode_j(0x6F, parse_reg(&inst.args[0]), get_imm(&inst.args[1], true)),
-            "jalr" => encoded = encode_i(0x67, 0x0, parse_reg(&inst.args[0]), parse_reg(&inst.args[1]), get_imm(&inst.args[2], false)),
+            "jal"  => encoded = encode_j(0x6F, parse_reg(&inst.args[0], ln, lt), get_imm(&inst.args[1], true)),
+            "jalr" => encoded = encode_i(0x67, 0x0, parse_reg(&inst.args[0], ln, lt), parse_reg(&inst.args[1], ln, lt), get_imm(&inst.args[2], false)),
             "j"    => encoded = encode_j(0x6F, 0, get_imm(&inst.args[0], true)),
-            "ret"  => encoded = encode_i(0x67, 0x0, 0, parse_reg("ra"), 0),
+            "ret"  => encoded = encode_i(0x67, 0x0, 0, parse_reg("ra", ln, lt), 0),
+
+            // SYSTEM instructions (encode as proper ECALL/EBREAK)
+            "ecall"  => encoded = encode_i(0x73, 0x0, 0, 0, 0),
+            "ebreak" => encoded = encode_i(0x73, 0x0, 0, 0, 1),
+            // FENCE (encode as FENCE with default pred/succ)
+            "fence"  => encoded = encode_i(0x0F, 0x0, 0, 0, 0x0FF),
             
             ".word" => encoded = get_imm(&inst.args[0], false),
             
-            _ => panic!("Unknown instruction: {}", inst.mnemonic),
+            _ => {
+                eprintln!("Error on line {}: Unknown instruction '{}'\n  --> {}", inst.line_num, inst.mnemonic, inst.original);
+                std::process::exit(1);
+            }
         }
         
         writeln!(out_file, "{:08x}", encoded)?;
     }
 
-    println!("Successfully assembled to {}", output_path);
+    let num_instructions = instructions.len();
+    let num_bytes = num_instructions * 4;
+    println!("Successfully assembled {} instructions ({} bytes) to {}", num_instructions, num_bytes, output_path);
     Ok(())
 }

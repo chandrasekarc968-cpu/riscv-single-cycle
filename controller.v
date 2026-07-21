@@ -98,6 +98,15 @@ module maindec (
             7'b0010111: begin // AUIPC
                 reg_write = 1; imm_src = 3'b100; result_src = 3'b100;
             end
+            7'b0001111: begin // FENCE — treated as NOP in single-cycle
+                // All outputs remain at default (0) — no side effects
+            end
+            7'b1110011: begin // SYSTEM (ECALL / EBREAK) — treated as NOP
+                // All outputs remain at default (0) — no side effects
+            end
+            default: begin // Unknown opcode — safe defaults (NOP behavior)
+                // All outputs already set to 0 above
+            end
         endcase
     end
 endmodule

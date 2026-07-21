@@ -1,4 +1,6 @@
-module main_memory (
+module main_memory #(
+    parameter LATENCY = 4  // Number of wait cycles before memory responds (simulates DRAM latency)
+) (
     input             clk,
     input             reset,
     input             req,      // Request memory operation
@@ -9,46 +11,64 @@ module main_memory (
     output reg        ready     // High when operation is complete
 );
 
-    // 1024 words = 4KB memory
-    reg [31:0] RAM[1023:0]; 
+    // 2,621,440 words = 10MB memory
+    reg [31:0] RAM[2621439:0]; 
 
     // Initialize with program data
     initial begin
-        // Note: program.hex will be loaded by imem.v natively, but for unified memory we load it here too.
         $readmemh("program.hex", RAM);
     end
 
-    reg [2:0] state;
-    localparam IDLE = 0, WAIT1 = 1, WAIT2 = 2, WAIT3 = 3, DONE = 4;
+    reg [3:0] wait_counter;  // Supports up to LATENCY=15
+
+    localparam IDLE = 0, WAITING = 1, DONE = 2;
+    reg [1:0] state;
 
     // Block address (128-bit aligned = 4 words = 16 bytes)
     // a is a byte address, a[31:2] is word index.
     // To align to 4 words, clear the bottom 2 bits of the word index.
     wire [29:0] block_addr = a[31:2] & ~30'd3;
 
+    // Word address for bounds checking
+    wire [29:0] word_addr = a[31:2];
+
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             state <= IDLE;
             ready <= 0;
             rd <= 0;
+            wait_counter <= 0;
         end else begin
             case (state)
                 IDLE: begin
                     ready <= 0;
                     if (req) begin
-                        state <= WAIT1;
+                        wait_counter <= 0;
+                        state <= WAITING;
                     end
                 end
-                WAIT1: state <= WAIT2;
-                WAIT2: state <= WAIT3;
-                WAIT3: state <= DONE;
+                WAITING: begin
+                    if (wait_counter >= LATENCY - 1) begin
+                        state <= DONE;
+                    end else begin
+                        wait_counter <= wait_counter + 1;
+                    end
+                end
                 DONE: begin
                     ready <= 1;
+
+                    // Simulation-only: address bounds check
+                    // synthesis translate_off
+                    if (word_addr >= 2621440) begin
+                        $display("WARNING [main_memory]: Address 0x%08x out of bounds (10MB limit)", a);
+                    end
+                    // synthesis translate_on
+
                     if (|we) begin
-                        if (we[0]) RAM[a[31:2]][7:0]   <= wd[7:0];
-                        if (we[1]) RAM[a[31:2]][15:8]  <= wd[15:8];
-                        if (we[2]) RAM[a[31:2]][23:16] <= wd[23:16];
-                        if (we[3]) RAM[a[31:2]][31:24] <= wd[31:24];
+                        if (we[0]) RAM[word_addr][7:0]   <= wd[7:0];
+                        if (we[1]) RAM[word_addr][15:8]  <= wd[15:8];
+                        if (we[2]) RAM[word_addr][23:16] <= wd[23:16];
+                        if (we[3]) RAM[word_addr][31:24] <= wd[31:24];
                     end else begin
                         rd <= {RAM[block_addr+3], RAM[block_addr+2], RAM[block_addr+1], RAM[block_addr]};
                     end

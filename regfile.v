@@ -12,6 +12,15 @@ module regfile (
     // Create an array of 32 registers, each 32 bits wide
     reg [31:0] rf [31:0];
 
+    // Simulation-only: initialize all registers to zero to avoid X-values in waveforms
+    // synthesis translate_off
+    integer i;
+    initial begin
+        for (i = 0; i < 32; i = i + 1)
+            rf[i] = 32'b0;
+    end
+    // synthesis translate_on
+
     // Synchronous Write: Happens strictly on the rising edge of the clock
     always @(posedge clk) begin
         // Only write if Write Enable is high AND the target register is not x0 (address 0)

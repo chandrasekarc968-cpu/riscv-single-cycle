@@ -150,12 +150,15 @@ module riscv (
     // DATAPATH
     // ---------------------------------------------------------
     
+    // JALR target: alu_result with bit 0 cleared (RISC-V spec requirement)
+    wire [31:0] jalr_target = {alu_result[31:1], 1'b0};
+
     // PC Logic
     assign pc_plus_4 = pc + 32'd4;
     assign pc_target = pc + imm_ext;
     assign pc_next = (pc_src == 2'b00) ? pc_plus_4 :
                      (pc_src == 2'b01) ? pc_target :   // Branch or JAL
-                                         alu_result;   // JALR
+                                         jalr_target;  // JALR (bit 0 cleared per spec)
 
     pc pcreg (
         .clk(clk),

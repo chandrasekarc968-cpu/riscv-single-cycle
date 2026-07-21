@@ -19,20 +19,37 @@ module dcache (
     input             mem_ready
 );
 
-    // Cache parameters: 16 lines, 16 bytes (4 words) per line.
-    reg [23:0]  tags [15:0];
-    reg         valid [15:0];
-    reg [127:0] data [15:0];
+    // Cache parameters: 64 lines, 16 bytes (4 words) per line = 1KB cache
+    localparam NUM_LINES   = 64;
+    localparam INDEX_BITS  = 6;   // log2(64)
+    localparam OFFSET_BITS = 4;   // 16 bytes per line -> bits [3:0]
+    localparam TAG_BITS    = 32 - INDEX_BITS - OFFSET_BITS; // 22 bits
+
+    reg [TAG_BITS-1:0]  tags  [NUM_LINES-1:0];
+    reg                 valid [NUM_LINES-1:0];
+    reg [127:0]         data  [NUM_LINES-1:0];
     
-    wire [1:0]  word_offset = cpu_addr[3:2];
-    wire [3:0]  index       = cpu_addr[7:4];
-    wire [23:0] tag         = cpu_addr[31:8];
+    wire [1:0]            word_offset = cpu_addr[3:2];
+    wire [INDEX_BITS-1:0] index       = cpu_addr[INDEX_BITS+OFFSET_BITS-1:OFFSET_BITS]; // [9:4]
+    wire [TAG_BITS-1:0]   tag         = cpu_addr[31:INDEX_BITS+OFFSET_BITS];             // [31:10]
     
     wire hit = valid[index] && (tags[index] == tag);
     wire is_write = |cpu_wmask;
     
-    reg [1:0] state;
-    localparam IDLE = 0, FETCH = 1, WRITE = 2;
+    // State machine: IDLE -> FETCH (read miss) or WRITEBACK (write-through to memory)
+    //                FETCH -> IDLE (line filled)
+    //                WRITEBACK -> WB_FILL (write-allocate: fetch line after write-through)
+    //                WB_FILL -> IDLE (line filled and updated)
+    reg [2:0] state;
+    localparam IDLE      = 0,
+               FETCH     = 1,
+               WRITEBACK = 2,
+               WB_FILL   = 3;
+
+    // Latch the write request info so it persists across state transitions
+    reg [3:0]  latched_wmask;
+    reg [31:0] latched_wdata;
+    reg [1:0]  latched_word_offset;
     
     always @(*) begin
         // Default combinational outputs
@@ -50,33 +67,54 @@ module dcache (
             2'b11: cpu_rdata = data[index][127:96];
         endcase
 
-        if (state == IDLE) begin
-            if (cpu_req) begin
-                if (is_write) begin
-                    // Write-through: always stall to write to main memory
-                    cpu_stall = 1;
-                    mem_req = 1;
-                    mem_we = cpu_wmask;
-                end else if (!hit) begin
-                    // Read miss: fetch block from memory
-                    cpu_stall = 1;
-                    mem_req = 1;
-                    mem_we = 4'b0000;
+        case (state)
+            IDLE: begin
+                if (cpu_req) begin
+                    if (is_write) begin
+                        // Write-through: always stall to write to main memory
+                        cpu_stall = 1;
+                        mem_req = 1;
+                        mem_we = cpu_wmask;
+                    end else if (!hit) begin
+                        // Read miss: fetch block from memory
+                        cpu_stall = 1;
+                        mem_req = 1;
+                        mem_we = 4'b0000;
+                    end
+                    // Read hit: no stall, data is available combinationally
                 end
             end
-        end else if (state == FETCH || state == WRITE) begin
-            cpu_stall = 1;
-            mem_req = 1;
-            if (state == WRITE) mem_we = cpu_wmask;
-            else mem_we = 4'b0000;
-        end
+            FETCH: begin
+                cpu_stall = 1;
+                mem_req = 1;
+                mem_we = 4'b0000;
+            end
+            WRITEBACK: begin
+                cpu_stall = 1;
+                mem_req = 1;
+                mem_we = latched_wmask;
+            end
+            WB_FILL: begin
+                // Write-allocate: fetch the cache line after writing through
+                cpu_stall = 1;
+                mem_req = 1;
+                mem_we = 4'b0000;
+            end
+            default: begin
+                cpu_stall = 0;
+                mem_req = 0;
+            end
+        endcase
     end
     
     integer i;
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             state <= IDLE;
-            for (i = 0; i < 16; i = i + 1) begin
+            latched_wmask <= 0;
+            latched_wdata <= 0;
+            latched_word_offset <= 0;
+            for (i = 0; i < NUM_LINES; i = i + 1) begin
                 valid[i] <= 0;
                 tags[i] <= 0;
                 data[i] <= 0;
@@ -85,11 +123,19 @@ module dcache (
             case (state)
                 IDLE: begin
                     if (cpu_req) begin
-                        if (is_write) state <= WRITE;
-                        else if (!hit) state <= FETCH;
+                        if (is_write) begin
+                            // Latch write info for use across states
+                            latched_wmask <= cpu_wmask;
+                            latched_wdata <= cpu_wdata;
+                            latched_word_offset <= word_offset;
+                            state <= WRITEBACK;
+                        end else if (!hit) begin
+                            state <= FETCH;
+                        end
                     end
                 end
                 FETCH: begin
+                    // Read miss: fill cache line from memory
                     if (mem_ready) begin
                         valid[index] <= 1;
                         tags[index] <= tag;
@@ -97,15 +143,33 @@ module dcache (
                         state <= IDLE;
                     end
                 end
-                WRITE: begin
+                WRITEBACK: begin
+                    // Write-through complete, now write-allocate (fetch the line)
                     if (mem_ready) begin
-                        // Update cache if it's a hit, so we read the new data later
                         if (hit) begin
-                            if (cpu_wmask[0]) data[index][(word_offset*32) +: 8]   <= cpu_wdata[7:0];
-                            if (cpu_wmask[1]) data[index][(word_offset*32)+8 +: 8] <= cpu_wdata[15:8];
-                            if (cpu_wmask[2]) data[index][(word_offset*32)+16 +: 8]<= cpu_wdata[23:16];
-                            if (cpu_wmask[3]) data[index][(word_offset*32)+24 +: 8]<= cpu_wdata[31:24];
+                            // Cache hit: update cache line in-place
+                            if (latched_wmask[0]) data[index][(latched_word_offset*32) +:  8] <= latched_wdata[7:0];
+                            if (latched_wmask[1]) data[index][(latched_word_offset*32)+8 +:  8] <= latched_wdata[15:8];
+                            if (latched_wmask[2]) data[index][(latched_word_offset*32)+16 +: 8] <= latched_wdata[23:16];
+                            if (latched_wmask[3]) data[index][(latched_word_offset*32)+24 +: 8] <= latched_wdata[31:24];
+                            state <= IDLE;
+                        end else begin
+                            // Cache miss: fetch the line (write-allocate)
+                            state <= WB_FILL;
                         end
+                    end
+                end
+                WB_FILL: begin
+                    // Write-allocate: fill cache line, then apply the write
+                    if (mem_ready) begin
+                        valid[index] <= 1;
+                        tags[index] <= tag;
+                        // Load line from memory, then overlay the written bytes
+                        data[index] <= mem_rdata;
+                        if (latched_wmask[0]) data[index][(latched_word_offset*32) +:  8] <= latched_wdata[7:0];
+                        if (latched_wmask[1]) data[index][(latched_word_offset*32)+8 +:  8] <= latched_wdata[15:8];
+                        if (latched_wmask[2]) data[index][(latched_word_offset*32)+16 +: 8] <= latched_wdata[23:16];
+                        if (latched_wmask[3]) data[index][(latched_word_offset*32)+24 +: 8] <= latched_wdata[31:24];
                         state <= IDLE;
                     end
                 end
