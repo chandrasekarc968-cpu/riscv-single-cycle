@@ -3,150 +3,250 @@ module top (
     input reset
 );
 
-    wire [31:0] pc, instr, read_data;
-    wire [31:0] data_adr, write_data;
-    wire [3:0]  mem_write;
-    wire        mem_read;
-    wire        stall;
-    wire        cpu_stall_req;
-    wire        timer_interrupt;
+    // =========================================================
+    // Core 0 Signals
+    // =========================================================
+    wire [31:0] core0_pc, core0_instr, core0_read_data;
+    wire [31:0] core0_data_adr, core0_write_data;
+    wire [3:0]  core0_mem_write;
+    wire        core0_mem_read, core0_stall, core0_cpu_stall_req;
+    
+    wire        core0_icache_stall, core0_cache_stall;
+    wire [31:0] core0_cache_rdata;
+    
+    // Core 0 Memory Interface
+    wire        core0_icache_mem_req;
+    wire [31:0] core0_icache_mem_addr;
+    wire [127:0] core0_icache_mem_rdata;
+    wire        core0_icache_mem_ready;
+    
+    wire        core0_dcache_mem_req;
+    wire [3:0]  core0_dcache_mem_we;
+    wire [31:0] core0_dcache_mem_addr, core0_dcache_mem_wdata;
+    wire [127:0] core0_dcache_mem_rdata;
+    wire        core0_dcache_mem_ready;
 
-    // Instantiate the RISC-V Processor Core
-    riscv rv32core (
-        .clk(clk),
-        .reset(reset),
-        .instr(instr),
-        .read_data(read_data),
-        .pc(pc),
-        .alu_result(data_adr),
-        .write_data(write_data),
-        .mem_write(mem_write),
-        .mem_read(mem_read),
-        .stall(stall),
-        .cpu_stall_req(cpu_stall_req),
-        .ext_interrupt(timer_interrupt)
-    );
+    wire        core0_mem_req;
+    wire [3:0]  core0_mem_we;
+    wire [31:0] core0_mem_addr, core0_mem_wdata;
+    wire [127:0] core0_mem_rdata;
+    wire        core0_mem_ready;
 
-    wire        icache_stall;
-    wire        icache_mem_req;
-    wire [31:0] icache_mem_addr;
-    wire [127:0] icache_mem_rdata;
-    wire        icache_mem_ready;
+    // =========================================================
+    // Core 1 Signals
+    // =========================================================
+    wire [31:0] core1_pc, core1_instr, core1_read_data;
+    wire [31:0] core1_data_adr, core1_write_data;
+    wire [3:0]  core1_mem_write;
+    wire        core1_mem_read, core1_stall, core1_cpu_stall_req;
+    
+    wire        core1_icache_stall, core1_cache_stall;
+    wire [31:0] core1_cache_rdata;
+    
+    // Core 1 Memory Interface
+    wire        core1_icache_mem_req;
+    wire [31:0] core1_icache_mem_addr;
+    wire [127:0] core1_icache_mem_rdata;
+    wire        core1_icache_mem_ready;
+    
+    wire        core1_dcache_mem_req;
+    wire [3:0]  core1_dcache_mem_we;
+    wire [31:0] core1_dcache_mem_addr, core1_dcache_mem_wdata;
+    wire [127:0] core1_dcache_mem_rdata;
+    wire        core1_dcache_mem_ready;
 
-    // Instantiate Instruction Cache
-    icache icache_inst (
-        .clk(clk),
-        .reset(reset),
-        .cpu_addr(pc),
-        .cpu_req(1'b1), // CPU always fetching unless stalled
-        .cpu_rdata(instr),
-        .cpu_stall(icache_stall),
-        .mem_req(icache_mem_req),
-        .mem_addr(icache_mem_addr),
-        .mem_rdata(icache_mem_rdata),
-        .mem_ready(icache_mem_ready)
-    );
+    wire        core1_mem_req;
+    wire [3:0]  core1_mem_we;
+    wire [31:0] core1_mem_addr, core1_mem_wdata;
+    wire [127:0] core1_mem_rdata;
+    wire        core1_mem_ready;
 
-    // ---------------------------------------------------------
-    // MMIO Address Decoding
-    // ---------------------------------------------------------
-    // Memory Map:
-    //   0x00000000 - 0x009FFFFF : Main RAM (10MB)
-    //   0x80000000              : UART TX (write byte)
-    //   0x80000004              : UART RX (read byte, stalls until input ready)
-    //   0x80000008              : Timer (cycle counter, read-only)
-    //   0x8000000C              : Cycle counter (alias, read-only)
-    //   0x80000010              : Simulation finish (write any value to halt)
-    // ---------------------------------------------------------
+    // =========================================================
+    // Shared MMIO Arbitration
+    // =========================================================
+    wire core0_is_mmio = (core0_data_adr[31:28] == 4'h8);
+    wire core1_is_mmio = (core1_data_adr[31:28] == 4'h8);
+    
+    wire mmio_grant0 = core0_is_mmio;
+    wire mmio_grant1 = core1_is_mmio & ~core0_is_mmio;
+    
+    wire [31:0] mmio_adr   = mmio_grant0 ? core0_data_adr : core1_data_adr;
+    wire [31:0] mmio_wdata = mmio_grant0 ? core0_write_data : core1_write_data;
+    wire [3:0]  mmio_wmask = mmio_grant0 ? core0_mem_write :
+                             mmio_grant1 ? core1_mem_write : 4'b0000;
+    wire        mmio_read  = mmio_grant0 ? core0_mem_read :
+                             mmio_grant1 ? core1_mem_read : 1'b0;
 
-    wire is_mmio    = (data_adr[31:28] == 4'h8);
-    wire is_uart_tx = is_mmio && (data_adr == 32'h80000000);
-    wire is_uart_rx = is_mmio && (data_adr == 32'h80000004);
-    wire is_timer   = is_mmio && (data_adr == 32'h80000008);
-    wire is_cycles  = is_mmio && (data_adr == 32'h8000000C);
-    wire is_finish  = is_mmio && (data_adr == 32'h80000010);
+    wire is_uart_tx = (mmio_adr == 32'h80000000);
+    wire is_uart_rx = (mmio_adr == 32'h80000004);
+    wire is_timer   = (mmio_adr == 32'h80000008);
+    wire is_cycles  = (mmio_adr == 32'h8000000C);
+    wire is_finish  = (mmio_adr == 32'h80000010);
+    wire is_mutex   = (mmio_adr == 32'h80000014);
 
-    // ---------------------------------------------------------
-    // UART RX Logic (Stall to read synchronously)
-    // ---------------------------------------------------------
+    // =========================================================
+    // MMIO Logic
+    // =========================================================
+    
+    // UART RX
     reg [7:0] uart_char;
     reg       uart_char_valid;
-    
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             uart_char <= 0;
             uart_char_valid <= 0;
-        end else if (is_uart_rx && mem_read && !uart_char_valid) begin
+        end else if (is_uart_rx && mmio_read && !uart_char_valid) begin
             uart_char <= $fgetc(32'h8000_0000);
             uart_char_valid <= 1;
-        end else if (is_uart_rx && mem_read && uart_char_valid) begin
-            uart_char_valid <= 0; // consumed
+        end else if (is_uart_rx && mmio_read && uart_char_valid) begin
+            uart_char_valid <= 0;
         end
     end
-    
-    wire mmio_stall = (is_uart_rx && mem_read && !uart_char_valid);
+    wire uart_rx_stall = (is_uart_rx && mmio_read && !uart_char_valid);
 
-    // ---------------------------------------------------------
-    // Timer / Cycle Counter
-    // ---------------------------------------------------------
+    // Timer
     reg [31:0] timer_val;
     always @(posedge clk or posedge reset) begin
         if (reset) timer_val <= 0;
         else timer_val <= timer_val + 1;
     end
-    
-    // Trigger interrupt every 4096 cycles (pulse for 1 cycle)
-    assign timer_interrupt = (timer_val[11:0] == 12'hFFF);
+    wire timer_interrupt = (timer_val[11:0] == 12'hFFF);
 
-    // ---------------------------------------------------------
-    // UART TX Logic
-    // ---------------------------------------------------------
+    // Hardware Mutex (Read-to-Lock)
+    reg mutex;
+    always @(posedge clk or posedge reset) begin
+        if (reset) mutex <= 0;
+        else if (is_mutex && mmio_read) mutex <= 1'b1;
+        else if (is_mutex && |mmio_wmask) mutex <= mmio_wdata[0];
+    end
+
+    // UART TX
     always @(posedge clk) begin
-        if (is_uart_tx && mem_write[0]) begin
-            $write("%c", write_data[7:0]);
+        if (is_uart_tx && mmio_wmask[0]) begin
+            $write("%c", mmio_wdata[7:0]);
         end
     end
 
-    // ---------------------------------------------------------
-    // Simulation Finish MMIO
-    // ---------------------------------------------------------
+    // Simulation Finish
     // synthesis translate_off
     always @(posedge clk) begin
-        if (!reset && is_finish && |mem_write) begin
+        if (!reset && is_finish && |mmio_wmask) begin
             $display("\n--- Simulation finished by program (wrote to 0x80000010) at cycle %0d ---", timer_val);
             $finish;
         end
     end
     // synthesis translate_on
 
-    // ---------------------------------------------------------
-    // Memory Routing
-    // ---------------------------------------------------------
-    wire        cache_stall;
-    wire [31:0] cache_rdata;
-    
-    // CPU reads from MMIO if requested, else from cache
-    assign read_data = is_timer   ? timer_val :
-                       is_cycles  ? timer_val :
-                       is_uart_rx ? {24'b0, uart_char} :
-                       cache_rdata;
-                       
-    // Stall CPU if cache stalls, MMIO is waiting, or CPU requires a stall (e.g. multi-cycle math)
-    assign stall = is_mmio ? mmio_stall : (cache_stall | icache_stall | cpu_stall_req);
-    
-    // Cache memory inputs: suppress requests for MMIO addresses
-    wire        cache_req   = (mem_read | (|mem_write)) & ~is_mmio;
-    wire [3:0]  cache_wmask = is_mmio ? 4'b0000 : mem_write;
+    wire [31:0] mmio_rdata = is_timer ? timer_val :
+                             is_cycles ? timer_val :
+                             is_uart_rx ? {24'b0, uart_char} :
+                             is_mutex ? {31'b0, mutex} : 32'b0;
 
-    // D-Cache Memory Interface
-    wire        dcache_mem_req;
-    wire [3:0]  dcache_mem_we;
-    wire [31:0] dcache_mem_addr;
-    wire [31:0] dcache_mem_wdata;
-    wire [127:0] dcache_mem_rdata;
-    wire        dcache_mem_ready;
+    // =========================================================
+    // Core 0 Instantiation
+    // =========================================================
+    assign core0_read_data = core0_is_mmio ? mmio_rdata : core0_cache_rdata;
+    wire core0_mmio_stall = core0_is_mmio & (~mmio_grant0 | uart_rx_stall);
+    assign core0_stall = core0_mmio_stall | core0_cache_stall | core0_icache_stall | core0_cpu_stall_req;
+    
+    wire        core0_cache_req   = (core0_mem_read | (|core0_mem_write)) & ~core0_is_mmio;
+    wire [3:0]  core0_cache_wmask = core0_is_mmio ? 4'b0000 : core0_mem_write;
 
-    // Main Memory Interface
+    riscv core0 (
+        .clk(clk),
+        .reset(reset),
+        .instr(core0_instr),
+        .read_data(core0_read_data),
+        .pc(core0_pc),
+        .alu_result(core0_data_adr),
+        .write_data(core0_write_data),
+        .mem_write(core0_mem_write),
+        .mem_read(core0_mem_read),
+        .stall(core0_stall),
+        .cpu_stall_req(core0_cpu_stall_req),
+        .ext_interrupt(timer_interrupt),
+        .hartid(32'd0)
+    );
+
+    icache icache0 (
+        .clk(clk), .reset(reset),
+        .cpu_addr(core0_pc), .cpu_req(1'b1), .cpu_rdata(core0_instr), .cpu_stall(core0_icache_stall),
+        .mem_req(core0_icache_mem_req), .mem_addr(core0_icache_mem_addr),
+        .mem_rdata(core0_icache_mem_rdata), .mem_ready(core0_icache_mem_ready)
+    );
+
+    dcache dcache0 (
+        .clk(clk), .reset(reset),
+        .cpu_addr(core0_data_adr), .cpu_wdata(core0_write_data), .cpu_wmask(core0_cache_wmask),
+        .cpu_req(core0_cache_req), .cpu_rdata(core0_cache_rdata), .cpu_stall(core0_cache_stall),
+        .mem_req(core0_dcache_mem_req), .mem_we(core0_dcache_mem_we), .mem_addr(core0_dcache_mem_addr),
+        .mem_wdata(core0_dcache_mem_wdata), .mem_rdata(core0_dcache_mem_rdata), .mem_ready(core0_dcache_mem_ready)
+    );
+
+    memory_arbiter arbiter0 (
+        .clk(clk), .reset(reset),
+        .icache_req(core0_icache_mem_req), .icache_addr(core0_icache_mem_addr),
+        .icache_rdata(core0_icache_mem_rdata), .icache_ready(core0_icache_mem_ready),
+        .dcache_req(core0_dcache_mem_req), .dcache_we(core0_dcache_mem_we), .dcache_addr(core0_dcache_mem_addr),
+        .dcache_wdata(core0_dcache_mem_wdata), .dcache_rdata(core0_dcache_mem_rdata), .dcache_ready(core0_dcache_mem_ready),
+        .mem_req(core0_mem_req), .mem_we(core0_mem_we), .mem_addr(core0_mem_addr),
+        .mem_wdata(core0_mem_wdata), .mem_rdata(core0_mem_rdata), .mem_ready(core0_mem_ready)
+    );
+
+    // =========================================================
+    // Core 1 Instantiation
+    // =========================================================
+    assign core1_read_data = core1_is_mmio ? mmio_rdata : core1_cache_rdata;
+    wire core1_mmio_stall = core1_is_mmio & (~mmio_grant1 | uart_rx_stall);
+    assign core1_stall = core1_mmio_stall | core1_cache_stall | core1_icache_stall | core1_cpu_stall_req;
+    
+    wire        core1_cache_req   = (core1_mem_read | (|core1_mem_write)) & ~core1_is_mmio;
+    wire [3:0]  core1_cache_wmask = core1_is_mmio ? 4'b0000 : core1_mem_write;
+
+    riscv core1 (
+        .clk(clk),
+        .reset(reset),
+        .instr(core1_instr),
+        .read_data(core1_read_data),
+        .pc(core1_pc),
+        .alu_result(core1_data_adr),
+        .write_data(core1_write_data),
+        .mem_write(core1_mem_write),
+        .mem_read(core1_mem_read),
+        .stall(core1_stall),
+        .cpu_stall_req(core1_cpu_stall_req),
+        .ext_interrupt(timer_interrupt),
+        .hartid(32'd1)
+    );
+
+    icache icache1 (
+        .clk(clk), .reset(reset),
+        .cpu_addr(core1_pc), .cpu_req(1'b1), .cpu_rdata(core1_instr), .cpu_stall(core1_icache_stall),
+        .mem_req(core1_icache_mem_req), .mem_addr(core1_icache_mem_addr),
+        .mem_rdata(core1_icache_mem_rdata), .mem_ready(core1_icache_mem_ready)
+    );
+
+    dcache dcache1 (
+        .clk(clk), .reset(reset),
+        .cpu_addr(core1_data_adr), .cpu_wdata(core1_write_data), .cpu_wmask(core1_cache_wmask),
+        .cpu_req(core1_cache_req), .cpu_rdata(core1_cache_rdata), .cpu_stall(core1_cache_stall),
+        .mem_req(core1_dcache_mem_req), .mem_we(core1_dcache_mem_we), .mem_addr(core1_dcache_mem_addr),
+        .mem_wdata(core1_dcache_mem_wdata), .mem_rdata(core1_dcache_mem_rdata), .mem_ready(core1_dcache_mem_ready)
+    );
+
+    memory_arbiter arbiter1 (
+        .clk(clk), .reset(reset),
+        .icache_req(core1_icache_mem_req), .icache_addr(core1_icache_mem_addr),
+        .icache_rdata(core1_icache_mem_rdata), .icache_ready(core1_icache_mem_ready),
+        .dcache_req(core1_dcache_mem_req), .dcache_we(core1_dcache_mem_we), .dcache_addr(core1_dcache_mem_addr),
+        .dcache_wdata(core1_dcache_mem_wdata), .dcache_rdata(core1_dcache_mem_rdata), .dcache_ready(core1_dcache_mem_ready),
+        .mem_req(core1_mem_req), .mem_we(core1_mem_we), .mem_addr(core1_mem_addr),
+        .mem_wdata(core1_mem_wdata), .mem_rdata(core1_mem_rdata), .mem_ready(core1_mem_ready)
+    );
+
+    // =========================================================
+    // Main Memory & Bus Arbiter
+    // =========================================================
     wire        mem_req;
     wire [3:0]  mem_we;
     wire [31:0] mem_addr;
@@ -154,40 +254,23 @@ module top (
     wire [127:0] mem_rdata;
     wire        mem_ready;
 
-    // Instantiate Data Cache
-    dcache dcache_inst (
-        .clk(clk),
-        .reset(reset),
-        .cpu_addr(data_adr),
-        .cpu_wdata(write_data),
-        .cpu_wmask(cache_wmask),
-        .cpu_req(cache_req),
-        .cpu_rdata(cache_rdata),
-        .cpu_stall(cache_stall),
-        .mem_req(dcache_mem_req),
-        .mem_we(dcache_mem_we),
-        .mem_addr(dcache_mem_addr),
-        .mem_wdata(dcache_mem_wdata),
-        .mem_rdata(dcache_mem_rdata),
-        .mem_ready(dcache_mem_ready)
-    );
-
-    // Instantiate Memory Arbiter
-    memory_arbiter arbiter_inst (
+    bus_arbiter main_bus (
         .clk(clk),
         .reset(reset),
         
-        .icache_req(icache_mem_req),
-        .icache_addr(icache_mem_addr),
-        .icache_rdata(icache_mem_rdata),
-        .icache_ready(icache_mem_ready),
+        .core0_req(core0_mem_req),
+        .core0_we(core0_mem_we),
+        .core0_addr(core0_mem_addr),
+        .core0_wdata(core0_mem_wdata),
+        .core0_rdata(core0_mem_rdata),
+        .core0_ready(core0_mem_ready),
         
-        .dcache_req(dcache_mem_req),
-        .dcache_we(dcache_mem_we),
-        .dcache_addr(dcache_mem_addr),
-        .dcache_wdata(dcache_mem_wdata),
-        .dcache_rdata(dcache_mem_rdata),
-        .dcache_ready(dcache_mem_ready),
+        .core1_req(core1_mem_req),
+        .core1_we(core1_mem_we),
+        .core1_addr(core1_mem_addr),
+        .core1_wdata(core1_mem_wdata),
+        .core1_rdata(core1_mem_rdata),
+        .core1_ready(core1_mem_ready),
         
         .mem_req(mem_req),
         .mem_we(mem_we),
@@ -197,7 +280,6 @@ module top (
         .mem_ready(mem_ready)
     );
 
-    // Instantiate Slow Main Memory
     main_memory main_mem_inst (
         .clk(clk),
         .reset(reset),

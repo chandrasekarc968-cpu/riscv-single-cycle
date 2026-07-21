@@ -1,73 +1,68 @@
-# 🚀 Single-Cycle RV32IM Processor with Advanced Memory & CSRs
+# 🚀 Dual-Core RV32IM Processor with Advanced Memory & CSRs
 
 [![RISC-V](https://img.shields.io/badge/ISA-RV32IM-blue.svg)](https://riscv.org/)
 [![Hardware](https://img.shields.io/badge/Hardware-Verilog-orange.svg)]()
 [![Assembler](https://img.shields.io/badge/Assembler-Rust-red.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)]()
 
-A 32-bit single-cycle RISC-V processor implemented in Verilog from the ground up. What started as a basic RV32I educational core has been **escalated** into a powerful architecture featuring the **RV32IM instruction set**, a unified 10MB main memory with an advanced **Instruction & Data Cache hierarchy**, **hardware interrupts (CSRs)**, and a custom Rust-based assembler.
+A 32-bit **Dual-Core** RISC-V processor implemented in Verilog from the ground up. What started as a basic RV32I educational core has been heavily escalated into a powerful **Symmetric Multiprocessing (SMP)** architecture featuring the **RV32IM instruction set**, a unified 10MB main memory with an advanced **Instruction & Data Cache hierarchy**, **hardware interrupts (CSRs)**, a **Hardware Mutex**, and a custom Rust-based assembler.
 
 ---
 
 ## 🏗️ Architecture Overview
 
-The core utilizes a Von Neumann architecture with unified main memory, arbitrated between an instruction cache and a 2-way set associative data cache. 
+The system utilizes a dual-core Von Neumann architecture with unified main memory. Each core possesses its own private L1 cache hierarchy, and a bus arbiter safely multiplexes their requests to the shared RAM.
 
 ```text
-                          ┌─────────────────────────────────────────────────────────┐
-                          │                    RISC-V Core (riscv.v)                │
-                          │                                                         │
-  ┌──────────┐   instr    │  ┌──────────┐    ┌────────────┐    ┌─────┐    ┌─────┐   │
-  │ I-Cache  │───────────►│  │Controller │───►│  Datapath   │───►│ ALU │    │ M/D │   │
-  │ (1 KB)   │            │  │          │    │  (regfile,  │◄───│     │    │Unit │   │
-  │ icache.v │◄───────────│  │controller│    │ csr_file,   │    └─────┘    └─────┘   │
-  └────┬─────┘    PC      │  │   .v     │    │   pc, ext)  │                        │
-       │                  │  └──────────┘    └──────┬──────┘                        │
-       │                  │                         │ addr / data                   │
-       │                  └─────────────────────────┼───────────────────────────────┘
-       │                                            │
-       │                            ┌───────────────┼───────────────┐
-       │                            │               │               │
-       │                      ┌─────▼─────┐   ┌────▼────┐           │
-       │                      │   MMIO    │   │ 2-Way   │           │
-       │                      │ (top.v)   │   │ D-Cache │           │
-       │                      │           │   │ (1 KB)  │           │
-       │                      │ UART TX/RX│   │dcache.v │           │
-       │                      │ Timer     │   └────┬────┘           │
-       │                      │ Finish    │        │                │
-       │                      └───────────┘        │                │
-       │                                           │                │
-       └─────────────────────────┐                 │                │
-                                 ▼                 ▼                │
-                              ┌───────────────────────┐             │
-                              │     Memory Arbiter    │             │
-                              │     (arbiter.v)       │             │
-                              └──────────┬────────────┘             │
-                                         │                          │
-                                         ▼                          │
-                              ┌───────────────────────┐             │
-                              │   Main Memory (10MB)  │◄────────────┘
-                              │   (main_memory.v)     │
-                              └───────────────────────┘
+       CORE 0                                              CORE 1
+ ┌────────────────┐                                  ┌────────────────┐
+ │  RISC-V Core   │                                  │  RISC-V Core   │
+ │   (riscv.v)    │                                  │   (riscv.v)    │
+ │ (hartid = 0)   │                                  │ (hartid = 1)   │
+ └─┬────────────┬─┘                                  └─┬────────────┬─┘
+   │ instr      │ data                                 │ instr      │ data
+ ┌─▼─────┐  ┌───▼───┐                              ┌───▼───┐  ┌─────▼─┐
+ │I-Cache│  │D-Cache│                              │D-Cache│  │I-Cache│
+ │(1 KB) │  │(1 KB) │                              │(1 KB) │  │(1 KB) │
+ └─┬─────┘  └───┬───┘                              └───┬───┘  └─────┬─┘
+   │            │                                      │            │
+ ┌─▼────────────▼─┐                                  ┌─▼────────────▼─┐
+ │ Memory Arbiter │                                  │ Memory Arbiter │
+ │  (arbiter.v)   │                                  │  (arbiter.v)   │
+ └────────┬───────┘                                  └───────┬────────┘
+          │                                                  │
+          └───────────────────────┐  ┌───────────────────────┘
+                                ┌─▼──▼─┐
+                                │ Bus  │
+                                │Arbit.│
+                                └──┬───┘
+                                   │
+                         ┌─────────▼────────┐
+                         │   Main Memory    │
+                         │      (10MB)      │
+                         └──────────────────┘
 ```
 
 ---
 
 ## ⚡ Key Features
 
-### 1. Hardware Math (M-Extension)
+### 1. Dual-Core SMP & Hardware Mutex
+The system runs two identical RISC-V cores concurrently! To prevent race conditions and overlapping I/O (like both cores writing to the screen simultaneously), we've implemented a **Hardware Mutex** mapped to the MMIO space. Cores can utilize a simple Read-to-Lock paradigm to synchronize their execution.
+
+### 2. Hardware Math (M-Extension)
 A dedicated `muldiv.v` unit implements multi-cycle state machines for precise, hardware-accelerated integer multiplication and division. The pipeline automatically stalls until the math operation yields a result.
 
-### 2. Advanced Unified Memory Hierarchy
+### 3. Advanced Unified Memory Hierarchy
 Say goodbye to instantaneous split memory. This core features:
 - **10MB Unified Main Memory** with realistic, configurable access latency.
-- **2-Way Set Associative D-Cache** (1KB) with LRU replacement and write-allocate policies.
-- **Direct-Mapped I-Cache** (1KB) for high-speed instruction fetching.
-- **Memory Arbiter** to seamlessly route parallel I-Cache and D-Cache requests to the slower main RAM.
+- **Private 2-Way Set Associative D-Caches** (1KB) with LRU replacement and write-allocate policies for each core.
+- **Private Direct-Mapped I-Caches** (1KB) for high-speed instruction fetching.
+- **Bus Arbiter** to seamlessly route parallel I-Cache and D-Cache requests from *both* cores to the slower main RAM without deadlocks.
 
-### 3. OS-Level Privilege & Interrupts (CSRs)
+### 4. OS-Level Privilege & Interrupts (CSRs)
 The `csr_file.v` module introduces Machine-Mode Control and Status Registers:
-- Tracks `mstatus`, `mtvec`, `mepc`, and `mcause`.
+- Tracks `mstatus`, `mtvec`, `mepc`, `mcause`, and `mhartid` (Hardware Thread ID).
 - Fully supports `ecall`, `mret`, and timer interrupts.
 - A built-in hardware timer interrupt fires automatically every 4,096 cycles, allowing for preemptive multitasking experiments!
 
@@ -98,6 +93,7 @@ The `csr_file.v` module introduces Machine-Mode Control and Status Registers:
 | `0x80000008` | 4 bytes | R | Timer — cycle counter (read-only) |
 | `0x8000000C` | 4 bytes | R | Cycle counter (alias of timer) |
 | `0x80000010` | 4 bytes | W | Simulation finish — write any value to halt |
+| `0x80000014` | 4 bytes | R/W | **Hardware Mutex** — Read 0 to lock (returns 1 if already locked), Write 0 to unlock |
 
 ---
 
@@ -109,13 +105,14 @@ The `csr_file.v` module introduces Machine-Mode Control and Status Registers:
 | `controller.v` | Instruction decoder: main decoder + ALU decoder, orchestrates datapath and pipeline stalls |
 | `alu.v` | Arithmetic and logic operations, branch condition evaluation |
 | `muldiv.v` | Hardware multiplier and restoring divider (multi-cycle state machine) |
-| `csr_file.v` | Control and Status Registers (`mstatus`, `mtvec`, `mepc`, `mcause`) and interrupt handling |
+| `csr_file.v` | Control and Status Registers (`mstatus`, `mtvec`, `mepc`, `mcause`, `mhartid`) and interrupt handling |
 | `regfile.v` | 32×32-bit register file with async read, sync write, hardwired x0=0 |
 | `dcache.v` | 1 KB 2-Way Set Associative data cache with LRU replacement and write-allocate |
 | `icache.v` | 1 KB Direct-Mapped instruction cache |
-| `arbiter.v` | Memory Arbiter to resolve requests between I-Cache and D-Cache to main memory |
+| `arbiter.v` | Local Memory Arbiter to resolve requests between a single core's I-Cache and D-Cache |
+| `bus_arbiter.v` | Global Bus Arbiter to multiplex memory requests from both cores to Main Memory |
 | `main_memory.v` | 10 MB unified RAM with configurable latency (default 4 cycles) |
-| `top.v` | Top-level integration: CPU + Caches + Arbiter + Main Memory + MMIO |
+| `top.v` | Top-level integration: Dual CPUs + 4 Caches + 3 Arbiters + Main Memory + MMIO & Mutex |
 | `tb.v` | Testbench: clock generation, reset, timeout, VCD waveform dump |
 
 ---
@@ -162,16 +159,16 @@ The `riscv-asm/` directory contains a custom, zero-dependency **RV32IM assembler
 - **Waveform viewer**: [GTKWave](http://gtkwave.sourceforge.net/) (optional, for `.vcd` files)
 - **Rust toolchain**: [rustup.rs](https://rustup.rs/) (for the assembler)
 
-### Build & Run Diagnostics
+### Build & Run Dual-Core Diagnostics
 
 ```bash
-# 1. Assemble the M-extension test program
+# 1. Assemble the Multicore Mutex test program
 cd riscv-asm
-cargo run -- ../test_muldiv.s ../program.hex
+cargo run -- ../multicore_test.s ../program.hex
 
-# 2. Compile the Verilog design
+# 2. Compile the Dual-Core Verilog design
 cd ..
-iverilog -o sim.vvp tb.v top.v riscv.v controller.v alu.v extend.v regfile.v pc.v icache.v dcache.v arbiter.v main_memory.v muldiv.v csr_file.v
+iverilog -o sim.vvp tb.v top.v riscv.v controller.v alu.v extend.v regfile.v pc.v icache.v dcache.v arbiter.v bus_arbiter.v main_memory.v muldiv.v csr_file.v
 
 # 3. Run the simulation
 vvp sim.vvp
@@ -185,7 +182,7 @@ Experience the processor running a fully interactive MMIO game!
 cd riscv-asm
 cargo run -- ../game.s ../program.hex
 cd ..
-iverilog -o sim.vvp tb.v top.v riscv.v controller.v alu.v extend.v regfile.v pc.v icache.v dcache.v arbiter.v main_memory.v muldiv.v csr_file.v
+iverilog -o sim.vvp tb.v top.v riscv.v controller.v alu.v extend.v regfile.v pc.v icache.v dcache.v arbiter.v bus_arbiter.v main_memory.v muldiv.v csr_file.v
 vvp sim.vvp
 ```
 
@@ -198,3 +195,4 @@ The game uses UART MMIO for I/O — you'll see a text-based RPG interface right 
 - **Multi-cycle Extensions**: While mostly single-cycle, the processor asserts hardware stall requests during multi-cycle operations like M-extension math (`mul`, `div`), cache misses, and timer interrupts.
 - **Cache Architecture**: The data cache utilizes a 2-way set associative organization with an LRU tracking bit per set. The instruction cache is direct-mapped. Both caches route to unified main memory via an arbiter.
 - **Hardware Traps**: Basic machine-mode privileges are implemented. Setting `mstatus.MIE` enables a hardware timer interrupt that fires every 4096 cycles, trapping to the vector loaded in `mtvec`. Return via `mret`.
+- **SMP Interconnects**: Due to both cores sharing memory, `bus_arbiter.v` sits upstream of the main memory. It prioritizes `core0` if both cores suffer a cache miss on the exact same cycle, preventing bus starvation.

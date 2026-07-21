@@ -17,7 +17,8 @@ module csr_file (
     // Outputs to datapath
     output [31:0] epc,           // Address to return to
     output [31:0] trap_vector,   // Address to jump to on trap
-    output        interrupt_en   // Global interrupt enable
+    output        interrupt_en,  // Global interrupt enable
+    input  [31:0] hartid         // Hardware thread ID
 );
 
     // CSRs
@@ -41,6 +42,7 @@ module csr_file (
             12'h305: csr_rdata = mtvec;
             12'h341: csr_rdata = mepc;
             12'h342: csr_rdata = mcause;
+            12'hF14: csr_rdata = hartid;
             default: csr_rdata = 32'b0;
         endcase
     end

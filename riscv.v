@@ -10,7 +10,8 @@ module riscv (
     output        mem_read,
     input         stall,
     output        cpu_stall_req,
-    input         ext_interrupt
+    input         ext_interrupt,
+    input  [31:0] hartid
 );
 
     // Internal wires for Datapath and Control
@@ -209,7 +210,8 @@ module riscv (
         
         .epc(epc),
         .trap_vector(trap_vector),
-        .interrupt_en(interrupt_en)
+        .interrupt_en(interrupt_en),
+        .hartid(hartid)
     );
 
     // Register File
