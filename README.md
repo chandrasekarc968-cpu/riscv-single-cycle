@@ -139,6 +139,7 @@ iverilog -o sim.vvp tb.v top.v riscv.v controller.v alu.v extend.v regfile.v pc.
 vvp sim.vvp
 ```
 
+<<<<<<< HEAD
 The game uses UART MMIO for I/O — type a digit (1-9) and press Enter when prompted.
 
 ## Design Notes
@@ -147,3 +148,6 @@ The game uses UART MMIO for I/O — type a digit (1-9) and press Enter when prom
 - **Cache stalls**: The data cache introduces multi-cycle stalls on read misses and all writes (write-through policy). Write-allocate ensures the cache stays coherent.
 - **Memory latency**: Main memory has a configurable latency parameter (default: 4 cycles) to simulate realistic DRAM timing.
 - **JALR bit-0 clear**: Per RISC-V spec §2.5, the JALR target address has bit 0 forced to zero.
+=======
+This will assemble the instructions from `test.s` into `program.hex`, which will automatically be loaded by `imem.v` during your next processor simulation.cakl
+>>>>>>> bbe8cd3b30370da037abba74bfc39191533ca252
